@@ -28,7 +28,7 @@ func (r *router) handleTCP(packet gopacket.Packet, wCh chan []byte) {
 		flowHandler.tunWch = wCh
 		flowHandler.router = r
 
-		go TCPFlowHandler(flowHandler)
+		go tcpFlowHandler(flowHandler)
 	}
 
 	flowHandler.tunRCh <- packet
@@ -59,7 +59,7 @@ func tcpRst(ipv4 *layers.IPv4, tcp *layers.TCP) (ipLayer layers.IPv4, tcpLayer l
 	return
 }
 
-func TCPFlowHandler(f *FlowHandler) {
+func tcpFlowHandler(f *FlowHandler) {
 	defer f.Close()
 
 	select {

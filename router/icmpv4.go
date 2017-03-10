@@ -3,7 +3,7 @@ package router
 import (
 	"bytes"
 	"fmt"
-	"log"
+	"net"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -14,7 +14,7 @@ func (r *router) handleICMPv4(packet gopacket.Packet, wCh chan []byte) {
 
 	// handle icmp to myself
 	if bytes.Equal(ipv4.DstIP, r.selfIPv4) {
-		ICMPSelfHandler(packet, wCh, r.log)
+		r.icmpSelfHandler(packet, wCh)
 		return
 	}
 
@@ -39,14 +39,14 @@ func (r *router) handleICMPv4(packet gopacket.Packet, wCh chan []byte) {
 		flowHandler.router = r
 
 		// start an ICMP flow handler routine for this flow
-		go ICMPFlowHandler(flowHandler)
+		go icmpFlowHandler(flowHandler)
 	}
 
 	// send the packet to the flow handler
 	flowHandler.tunRCh <- packet
 }
 
-func ICMPSelfHandler(packet gopacket.Packet, wCh chan []byte, log *log.Logger) {
+func (r *router) icmpSelfHandler(packet gopacket.Packet, wCh chan []byte) {
 
 	ipv4 := packet.NetworkLayer().(*layers.IPv4)
 	icmp := packet.Layers()[1].(*layers.ICMPv4)
@@ -60,7 +60,7 @@ func ICMPSelfHandler(packet gopacket.Packet, wCh chan []byte, log *log.Logger) {
 			ComputeChecksums: true,
 		}
 
-		log.Printf("handled icmpv4 for self from %s\n", ipv4.SrcIP)
+		r.log.Printf("handled icmpv4 for self from %s\n", ipv4.SrcIP)
 
 		//create reply
 		ipLayer := layers.IPv4{
@@ -88,18 +88,126 @@ func ICMPSelfHandler(packet gopacket.Packet, wCh chan []byte, log *log.Logger) {
 		wCh <- buf.Bytes()
 	} else {
 		// silently ignore the rest
-		log.Printf("ignoring ICMP packet to self of type: %s\n", icmp.TypeCode)
+		r.log.Printf("ignoring ICMP packet to self of type: %s\n", icmp.TypeCode)
 	}
 }
 
-func ICMPFlowHandler(f *FlowHandler) {
+func icmpFlowHandler(f *FlowHandler) {
+	defer f.Close()
+	var err error
+
+	//netRCh := make(chan []byte)
+	netECh := make(chan error)
+
+	var ipv4 *layers.IPv4
+
+	select {
+	case tunData := <-f.tunRCh: //data came in from TUN to this flow
+		ipv4 = tunData.NetworkLayer().(*layers.IPv4)
+		icmp := tunData.Layers()[1].(*layers.ICMPv4)
+		f.router.log.Printf("handled icmpv4 for type: %s, src: %s, dst: %s", icmp.TypeCode, ipv4.SrcIP, ipv4.DstIP)
+
+		f.conn, err = net.DialIP("ip4:icmp", &net.IPAddr{IP: net.ParseIP("10.10.1.182")}, &net.IPAddr{IP: ipv4.DstIP})
+		if err != nil {
+			f.router.log.Printf("listen err, %s", err)
+			return
+		}
+		/*
+			go func() {
+				f.router.log.Printf("remote connection setup: %#v", f.conn)
+				data := make([]byte, 4096)
+				for {
+					_, err := f.conn.Read(data)
+					if err != nil {
+						netECh <- err
+						break
+					}
+					f.router.log.Printf("remote connection data read: %#v", data)
+					netRCh <- data
+				}
+			}()
+		*/
+
+		icmpLayer := layers.ICMPv4{
+			TypeCode: icmp.TypeCode,
+			Id:       icmp.Id,
+			Seq:      icmp.Seq,
+		}
+		err := gopacket.SerializeLayers(f.buf, f.opts, &icmpLayer, gopacket.Payload(icmp.BaseLayer.Payload))
+		if err != nil {
+			f.router.log.Printf("error serializing ICMPv4 packet: %s", err)
+			return
+		}
+
+		if _, err := f.conn.Write(f.buf.Bytes()); err != nil {
+			f.router.log.Printf("WriteTo err, %s", err)
+			return
+		}
+		f.router.log.Print("remote connection sent packet")
+
+		f.router.log.Printf("remote connection setup: %#v", f.conn)
+
+		netData := make([]byte, 1500)
+		n, err := f.conn.Read(netData)
+		if err != nil {
+			netECh <- err
+		} else {
+			f.router.log.Printf("remote connection data read: %#v", netData)
+			//			netRCh <- netData
+		}
+		//	case netData := <-netRCh: //data came in from network to this flow
+		netData = netData[:n]
+
+		f.router.log.Print("remote connection data handled")
+
+		packet := gopacket.NewPacket(netData, layers.LayerTypeIPv4, gopacket.Default)
+		if err := packet.ErrorLayer(); err != nil {
+			f.router.log.Printf("Error decoding some part of the packet: %s", err)
+			return
+		}
+		ipv42 := packet.Layers()[0].(*layers.IPv4)
+		icmp2 := packet.Layers()[1].(*layers.ICMPv4)
+
+		//create reply
+		ipLayer := layers.IPv4{
+			Version:  4,
+			TTL:      ipv42.TTL - 1,
+			TOS:      ipv42.TOS,
+			Id:       ipv42.Id,
+			SrcIP:    ipv4.DstIP,
+			DstIP:    ipv4.SrcIP,
+			Protocol: layers.IPProtocolICMPv4,
+		}
+		icmpLayer2 := layers.ICMPv4{
+			TypeCode: icmp2.TypeCode,
+			Id:       icmp2.Id,
+			Seq:      icmp2.Seq,
+		}
+		buf := gopacket.NewSerializeBuffer()
+		opts := gopacket.SerializeOptions{ComputeChecksums: true, FixLengths: true}
+		// serialize reply into bytes
+		err = gopacket.SerializeLayers(buf, opts, &ipLayer, &icmpLayer2, gopacket.Payload(icmp2.BaseLayer.Payload))
+		if err != nil {
+			f.router.log.Printf("error serializing ICMPv4 packet: %s", err)
+			return
+		}
+
+		// send bytes to tun interface
+		f.tunWch <- buf.Bytes()
+
+	case err = <-netECh: //error came in from network to this flow
+		f.router.log.Printf("icmp net read error: %s", err)
+		return
+	}
+}
+
+func icmpFlowHandler2(f *FlowHandler) {
 	defer f.Close()
 
 	select {
 	case packet := <-f.tunRCh: // new packet incoming for this flowTable
 
 		ipv4 := packet.NetworkLayer().(*layers.IPv4)
-
 		icmp := packet.Layers()[1].(*layers.ICMPv4)
 		f.router.log.Printf("handled icmpv4 for src: %s", ipv4.SrcIP)
 
