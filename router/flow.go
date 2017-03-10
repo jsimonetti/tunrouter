@@ -2,7 +2,6 @@ package router
 
 import (
 	"errors"
-	"log"
 	"net"
 	"sync"
 
@@ -10,18 +9,19 @@ import (
 )
 
 var (
+	// error returned when there in no FlowHandler for the given flowHash in the FlowTable
 	errNoSuchFlow = errors.New("no such flowHash")
 )
 
-var flowTable FlowTable = FlowTable{
-	flowMap: make(map[uint64]*FlowHandler),
-}
-
+// FlowTable holds a map to FlowHandlers keyed by a flowHash
+// the hash if of type flow.FastHash()
 type FlowTable struct {
 	lock    sync.Mutex
-	flowMap map[uint64]*FlowHandler // keyed my flow.FastHash()
+	flowMap map[uint64]*FlowHandler
 }
 
+// Get attempts to return the FlowHandler for a flowHash
+// If none can be found errNoSuchFlow is returned
 func (f *FlowTable) Get(flowHash uint64) (*FlowHandler, error) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
@@ -31,6 +31,7 @@ func (f *FlowTable) Get(flowHash uint64) (*FlowHandler, error) {
 	return nil, errNoSuchFlow
 }
 
+// New allocates a new FlowHandler and add it to the FlowTable for the given flowHash
 func (f *FlowTable) New(flowHash uint64) *FlowHandler {
 	f.lock.Lock()
 	defer f.lock.Unlock()
@@ -46,16 +47,22 @@ func (f *FlowTable) New(flowHash uint64) *FlowHandler {
 		tunRCh: make(chan gopacket.Packet),
 	}
 
-	f.flowMap[flowHash] = handler
-	return handler
+	// check first if it doesn't exist
+	if _, ok := f.flowMap[flowHash]; !ok {
+		f.flowMap[flowHash] = handler
+	}
+
+	return f.flowMap[flowHash]
 }
 
+// Delete removes a FlowHandler from the FlowTable
 func (f *FlowTable) Delete(flowHash uint64) {
 	f.lock.Lock()
 	delete(f.flowMap, flowHash)
 	f.lock.Unlock()
 }
 
+// FlowHandler is a structure for a single handler of a flowHash
 type FlowHandler struct {
 	flowHash uint64 // save my hash
 
@@ -67,11 +74,12 @@ type FlowHandler struct {
 	buf  gopacket.SerializeBuffer  // buffer for creating packets
 	opts gopacket.SerializeOptions // serialization option
 
-	log *log.Logger // inherited logger from router
+	router *router
 }
 
+// Close will remote the FlowHandler from the FlowTable and close any open connections handled by it
 func (f *FlowHandler) Close() {
-	flowTable.Delete(f.flowHash)
+	f.router.flowTable.Delete(f.flowHash)
 	close(f.tunRCh)
 	if f.conn != nil {
 		f.conn.Close()

@@ -24,19 +24,19 @@ func (r *router) handleICMPv4(packet gopacket.Packet, wCh chan []byte) {
 	var flowHandler *FlowHandler
 
 	// check if an existing flowHandler is allread in the flowTable.
-	if flowHandler, err = flowTable.Get(flowHash); err != nil {
+	if flowHandler, err = r.flowTable.Get(flowHash); err != nil {
 		if err != errNoSuchFlow {
 			r.log.Print("error getting existing flow handler: %s", err)
 			return
 		}
-		if flowHandler = flowTable.New(flowHash); flowHandler == nil {
+		if flowHandler = r.flowTable.New(flowHash); flowHandler == nil {
 			r.log.Print("error getting new flow handler")
 			return
 		}
 
 		//new flowHandler created, setup the write channel, logger
 		flowHandler.tunWch = wCh
-		flowHandler.log = r.log
+		flowHandler.router = r
 
 		// start an ICMP flow handler routine for this flow
 		go ICMPFlowHandler(flowHandler)
@@ -93,6 +93,7 @@ func ICMPSelfHandler(packet gopacket.Packet, wCh chan []byte, log *log.Logger) {
 }
 
 func ICMPFlowHandler(f *FlowHandler) {
+	defer f.Close()
 
 	select {
 	case packet := <-f.tunRCh: // new packet incoming for this flowTable
@@ -100,7 +101,7 @@ func ICMPFlowHandler(f *FlowHandler) {
 		ipv4 := packet.NetworkLayer().(*layers.IPv4)
 
 		icmp := packet.Layers()[1].(*layers.ICMPv4)
-		f.log.Printf("handled icmpv4 for src: %s", ipv4.SrcIP)
+		f.router.log.Printf("handled icmpv4 for src: %s", ipv4.SrcIP)
 
 		//return reply
 		ipLayer := layers.IPv4{
@@ -125,6 +126,6 @@ func ICMPFlowHandler(f *FlowHandler) {
 
 		f.tunWch <- f.buf.Bytes()
 
-		f.Close()
+		break
 	}
 }

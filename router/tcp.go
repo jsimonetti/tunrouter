@@ -16,17 +16,17 @@ func (r *router) handleTCP(packet gopacket.Packet, wCh chan []byte) {
 	var flowHandler *FlowHandler
 
 	// check if an existing flowHandler is allread in the flowTable.
-	if flowHandler, err := flowTable.Get(flowHash); err != nil {
+	if flowHandler, err := r.flowTable.Get(flowHash); err != nil {
 		if err != errNoSuchFlow {
 			r.log.Print("error getting existing flow handler: %s", err)
 			return
 		}
-		if flowHandler = flowTable.New(flowHash); flowHandler == nil {
+		if flowHandler = r.flowTable.New(flowHash); flowHandler == nil {
 			r.log.Print("error getting new flow handler")
 			return
 		}
 		flowHandler.tunWch = wCh
-		flowHandler.log = r.log
+		flowHandler.router = r
 
 		go TCPFlowHandler(flowHandler)
 	}
@@ -60,6 +60,7 @@ func tcpRst(ipv4 *layers.IPv4, tcp *layers.TCP) (ipLayer layers.IPv4, tcpLayer l
 }
 
 func TCPFlowHandler(f *FlowHandler) {
+	defer f.Close()
 
 	select {
 	case packet := <-f.tunRCh: // new packet incoming for this flowTable
@@ -73,11 +74,10 @@ func TCPFlowHandler(f *FlowHandler) {
 			panic(fmt.Sprintf("error serializing ICMPv4 packet: %s", err))
 		}
 
-		f.log.Print("sending RST")
+		f.router.log.Print("sending RST")
 
 		f.tunWch <- f.buf.Bytes()
-
-		f.Close()
+		break
 	}
 }
 
