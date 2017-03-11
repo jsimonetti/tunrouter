@@ -2,7 +2,7 @@ package router
 
 import (
 	"errors"
-	"fmt"
+	"io"
 	"net"
 	"sync"
 
@@ -88,22 +88,18 @@ func (f *FlowHandler) Close() {
 }
 
 func readNetData(conn net.Conn, netRCh chan []byte, netECh chan error) {
-	fmt.Printf("remote connection setup: %#v", conn)
 	data := make([]byte, 4096)
 	for {
-		fmt.Printf("starting read\n")
-		n, _ := conn.Read(data)
-		/*
-			fmt.Printf("read done: %#v, err: %s\n", data[:n], err)
-			if err != nil {
+		n, err := conn.Read(data)
+		if err != nil {
+			if n > 0 {
 				netRCh <- data[:n]
-				fmt.Printf("error readind data: %s\n", err)
-				netECh <- err
-				break
 			}
-		*/
-		fmt.Printf("remote connection data read: %#v\n", data[:n])
+			if err != io.EOF {
+				netECh <- err
+			}
+			break
+		}
 		netRCh <- data[:n]
-		//break
 	}
 }
