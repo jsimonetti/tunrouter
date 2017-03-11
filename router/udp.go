@@ -68,7 +68,7 @@ func udpFlowHandler(f *FlowHandler) {
 	var tunDstIP net.IP
 
 	// shorthand to reset the timeout
-	timeout := func() { f.ResetTimeOut(2 * time.Second) }
+	timeout := func() { f.ResetTimeOut(5 * time.Second) }
 
 	for {
 		select {
@@ -157,7 +157,7 @@ func udpFlowHandler(f *FlowHandler) {
 			udpLayer.SetNetworkLayerForChecksum(&ipLayer)
 
 			// serialize reply into bytes
-			err = gopacket.SerializeLayers(f.buf, f.opts, &ipLayer, gopacket.Payload(udp.BaseLayer.Payload))
+			err = gopacket.SerializeLayers(f.buf, f.opts, &ipLayer, &udpLayer, gopacket.Payload(udp.BaseLayer.Payload))
 			if err != nil {
 				f.router.log.Printf("error serializing UDP packet: %s", err)
 				return
