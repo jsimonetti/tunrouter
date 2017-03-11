@@ -1,7 +1,6 @@
 package router
 
 import (
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -34,21 +33,6 @@ func New(config Config) Router {
 			flowMap: make(map[uint64]*FlowHandler),
 		},
 	}
-}
-
-type OpenType int
-
-const (
-	_         OpenType = iota
-	OpenForL2 OpenType = iota
-	OpenForL3 OpenType = iota
-)
-
-func (r *router) Open(openType OpenType) (io.ReadWriteCloser, error) {
-	if openType == OpenForL3 {
-		return &l3ReadWriteCloser{}, nil
-	}
-	return nil, fmt.Errorf("opening for %#v is not accepted", openType)
 }
 
 // Router is an interface for a tunnel router

@@ -20,9 +20,8 @@ type Config struct {
 
 // tun is the struct wich holds the tunnelrouter
 type tun struct {
-	log        *log.Logger
-	handleIPv4 func(buff []byte, wCh chan []byte)
-	handleIPv6 func(buff []byte, wCh chan []byte)
+	log    *log.Logger
+	router router.Router
 }
 
 // New returns a new tunnelrouter
@@ -37,8 +36,7 @@ func New(config Config) *tun {
 		NATSourceIp: []byte{0x0a, 0x0a, 0x01, 0xb6}, //10.10.1.182
 	})
 
-	t.handleIPv4 = r.HandleIPv4
-	t.handleIPv6 = r.HandleIPv6
+	t.router = r
 
 	return t
 }
@@ -73,30 +71,37 @@ func (t *tun) Start() {
 	// timeout for now after 30 seconds
 	timeOut := time.After(60 * time.Second)
 
-	// handlerL3 is the handler for the L3 layer types
-	var handlerL3 func(buff []byte, wCh chan []byte)
+	// open the router for L3 packets
+	l3rwc, err := t.router.Open(router.OpenForL3)
+	if err != nil {
+		t.log.Fatalf("error from router.Open: %s", err)
+	}
+	defer l3rwc.Close()
 
-	// loop, reading packets from tun and passing them
-	// allong to the respective handlers
+	// fire a goroutine to read from the router
+	go func() {
+		buff := make([]byte, 4096)
+		for {
+			n, err := l3rwc.Read(buff)
+			if err != nil {
+				if n > 0 {
+					wCh <- buff[:n]
+				}
+				return
+			}
+			wCh <- buff[:n]
+		}
+	}()
+
+	// loop until timeout
 	for {
 		select {
 		case buff := <-rCh:
-			switch buff[0] >> 4 {
-			case 0x04: // IPv4
-				handlerL3 = t.handleIPv4
-			case 0x06: // IPv6
-				handlerL3 = t.handleIPv6
-			}
-
-			if handlerL3 != nil {
-				// fire the handler to do the rest
-				go handlerL3(buff, wCh)
-				break
-			}
-			t.log.Printf("unknow protocol packet [%x]", buff[0]>>4)
+			l3rwc.Write(buff)
 		case <-timeOut:
 			return
 		}
+
 	}
 }
 

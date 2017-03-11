@@ -18,62 +18,110 @@ type l3ReadWriteCloser struct {
 	in  chan l3Payload
 	out chan l3Payload
 
-	lock     sync.Mutex
+	lock     sync.RWMutex
 	isClosed bool
 }
 
 func (rwc *l3ReadWriteCloser) Read(p []byte) (n int, err error) {
-	rwc.lock.Lock()
-	defer rwc.lock.Unlock()
+	if len(p) == 0 {
+		return
+	}
+	//	rwc.lock.RLock()
+	//	defer rwc.lock.RUnlock()
 	if rwc.isClosed {
 		return 0, fmt.Errorf("allready closed")
 	}
 
-	data := <-rwc.in
-	n = len(data.payload)
-	if n > 0 {
-		p = data.payload
-	}
+	data := <-rwc.out
+	n = copy(p, data.payload)
 	err = data.err
 
 	if err != nil {
-		rwc.out <- l3Payload{
+		rwc.in <- l3Payload{
 			payload: nil,
 			err:     err,
 		}
-		rwc.isClosed = true
-		close(rwc.in)
+		rwc.Close()
 	}
 
 	return
 }
 
 func (rwc *l3ReadWriteCloser) Write(p []byte) (n int, err error) {
-	// the upstream side closed his channel
-	// we should close downstream to
-	rwc.lock.Lock()
-	defer rwc.lock.Unlock()
+	//	rwc.lock.RLock()
+	//	defer rwc.lock.RUnlock()
 	if rwc.isClosed {
 		err = fmt.Errorf("connection is closed")
 		return
 	}
 	data := l3Payload{
-		payload: p,
+		payload: p[:len(p)],
 		err:     nil,
 	}
-	rwc.out <- data
 	n = len(data.payload)
+	rwc.in <- data
 
 	return
 }
 
 func (rwc *l3ReadWriteCloser) Close() error {
-	rwc.lock.Lock()
-	defer rwc.lock.Unlock()
+	//	rwc.lock.Lock()
+	//	defer rwc.lock.Unlock()
 	if !rwc.isClosed {
 		rwc.isClosed = true
-		close(rwc.in)
+		close(rwc.out)
 		return nil
 	}
 	return fmt.Errorf("allready closed")
+}
+
+type OpenType int
+
+const (
+	_         OpenType = iota
+	OpenForL2 OpenType = iota
+	OpenForL3 OpenType = iota
+)
+
+func (r *router) Open(openType OpenType) (io.ReadWriteCloser, error) {
+	if openType == OpenForL3 {
+		fd := &l3ReadWriteCloser{
+			in:  make(chan l3Payload),
+			out: make(chan l3Payload),
+		}
+		go r.IPHandler(fd.in, fd.out)
+		return fd, nil
+	}
+	return nil, fmt.Errorf("opening for %#v is not accepted", openType)
+}
+
+func (r *router) IPHandler(rCh chan l3Payload, wCh chan l3Payload) {
+	handlerCh := make(chan []byte)
+	// handlerL3 is the handler for the L3 layer types
+	var handlerL3 func(buff []byte, wCh chan []byte)
+
+	// loop, reading packets from tun and passing them
+	// allong to the respective handlers
+	for {
+		select {
+		case buff := <-rCh:
+			switch buff.payload[0] >> 4 {
+			case 0x04: // IPv4
+				handlerL3 = r.HandleIPv4
+			case 0x06: // IPv6
+				handlerL3 = r.HandleIPv6
+			}
+
+			if handlerL3 != nil {
+				// fire the handler to do the rest
+				go handlerL3(buff.payload, handlerCh)
+				continue
+			}
+			r.log.Printf("unknow protocol packet [%x]", buff.payload[0]>>4)
+		case data := <-handlerCh:
+			wCh <- l3Payload{
+				payload: data,
+			}
+		}
+	}
 }
