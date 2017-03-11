@@ -203,8 +203,6 @@ func icmpFlowHandler(f *FlowHandler) {
 			// send bytes to tun interface
 			f.tunWch <- f.buf.Bytes()
 		case err = <-netECh: // error came in from network to this flow
-			timeout()
-
 			f.router.log.Printf("icmp net read error: %s", err)
 			return
 		}
