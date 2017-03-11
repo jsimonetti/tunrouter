@@ -5,8 +5,6 @@ import (
 	"io"
 	"log"
 	"net"
-
-	"github.com/google/gopacket"
 )
 
 // Config holds the configuration for this router
@@ -38,32 +36,47 @@ func New(config Config) Router {
 
 // Router is an interface for a tunnel router
 type Router interface {
-	HandleIPv4(buff []byte, wCh chan []byte)
-	HandleIPv6(buff []byte, wCh chan []byte)
-	HandleICMPv4(packet gopacket.Packet, wCh chan []byte)
-	HandleICMPv6(packet gopacket.Packet, wCh chan []byte)
-	HandleTCP(packet gopacket.Packet, wCh chan []byte)
-	HandleUDP(packet gopacket.Packet, wCh chan []byte)
-	Open(OpenType) (io.ReadWriteCloser, error)
+	//HandleIPv4(buff []byte, wCh chan []byte)
+	//HandleIPv6(buff []byte, wCh chan []byte)
+	//HandleICMPv4(packet gopacket.Packet, wCh chan []byte)
+	//HandleICMPv6(packet gopacket.Packet, wCh chan []byte)
+	//HandleTCP(packet gopacket.Packet, wCh chan []byte)
+	//HandleUDP(packet gopacket.Packet, wCh chan []byte)
+	Open(Mode) (io.ReadWriteCloser, error)
 }
 
 // make sure router implements Router
 var _ Router = &router{}
 
-type OpenType int
+// Mode are different methods of opening the Router
+type Mode int
 
 const (
-	_         OpenType = iota
-	OpenForL2 OpenType = iota
-	OpenForL3 OpenType = iota
+	// Open the router in L2 mode (ethernet)
+	L2Mode Mode = iota
+	// Open the router in L3 mode (IP)
+	L3Mode Mode = iota
 )
 
-func (r *router) Open(openType OpenType) (io.ReadWriteCloser, error) {
-	if openType == OpenForL3 {
+// String returns a string representation of the Mode
+func (m Mode) String() string {
+	switch m {
+	case L2Mode:
+		return "L2Mode"
+	case L3Mode:
+		return "L3Mode"
+	}
+	return fmt.Sprintf("Mode(%d)", m)
+}
+
+// Open will return an RWC for the router in the specified operation mode
+func (r *router) Open(openType Mode) (io.ReadWriteCloser, error) {
+	if openType == L3Mode {
 		fd := &l3ReadWriteCloser{
 			in:  make(chan l3Payload),
 			out: make(chan l3Payload),
 		}
+		// start the routers' interface between RWC and routers' handlers
 		go r.IPHandler(fd.in, fd.out)
 		return fd, nil
 	}

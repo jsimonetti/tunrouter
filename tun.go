@@ -72,7 +72,7 @@ func (t *tun) Start() {
 	timeOut := time.After(60 * time.Second)
 
 	// open the router for L3 packets
-	l3rwc, err := t.router.Open(router.OpenForL3)
+	l3rwc, err := t.router.Open(router.L3Mode)
 	if err != nil {
 		t.log.Fatalf("error from router.Open: %s", err)
 	}
