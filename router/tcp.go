@@ -119,6 +119,7 @@ func tcp4FlowHandler(f *FlowHandler) {
 	timeout := func() { f.ResetTimeOut(30 * time.Second) }
 
 	for {
+	START:
 		select {
 		case <-f.timeout: // a timeout happend
 			f.router.log.Printf("tcp flow [%s] timed out; src %#v(%s), dst %#v(%s)", f.flowHash, tunSrcIP, tunSrcIP, tunDstIP, tunDstIP)
@@ -129,6 +130,7 @@ func tcp4FlowHandler(f *FlowHandler) {
 			// if this flow is not done clientside, finish the handshake
 			if f.handShaking {
 				finishTcp4Handshake(f, tunData)
+				goto START
 			}
 
 			// unravel the tunData
@@ -157,10 +159,10 @@ func tcp4FlowHandler(f *FlowHandler) {
 					return
 				}
 				f.Dialing(false)
+				f.Handshake(true)
 				finishTcp4Handshake(f, tunData)
+				goto START
 			}
-
-			return
 
 			// start a read routine for this connection
 			go readNetData(f.conn, netRCh, netECh)
@@ -238,6 +240,67 @@ func tcp4FlowHandler(f *FlowHandler) {
 	}
 }
 
-func finishTcp4Handshake(f *FlowHandler, packet gopacket.Packet) {
+func finishTcp4Handshake(f *FlowHandler, tunData gopacket.Packet) {
+	// unravel the tunData
+	ipv4 := tunData.NetworkLayer().(*layers.IPv4)
+	tcp := tunData.Layers()[1].(*layers.TCP)
 
+	if tcp.SYN && !tcp.ACK { // first part of handshake
+		//send syn+ack
+
+		ipLayer := layers.IPv4{
+			Version:  4,
+			TTL:      64,
+			TOS:      ipv4.TOS,
+			Id:       ipv4.Id,
+			SrcIP:    ipv4.DstIP,
+			DstIP:    ipv4.SrcIP,
+			Protocol: layers.IPProtocolTCP,
+		}
+
+		tcpLayer := layers.TCP{
+			SrcPort: tcp.DstPort,
+			DstPort: tcp.SrcPort,
+			Seq:     tcp.Seq,
+			Ack:     tcp.Seq + 1,
+			ACK:     true,
+			SYN:     true,
+			Window:  0x7210,
+			Options: []layers.TCPOption{
+				layers.TCPOption{
+					OptionType:   layers.TCPOptionKindMSS,
+					OptionLength: 2,
+					OptionData:   []byte{0x05, 0xb4}, // default of 1460
+				},
+				/*
+					layers.TCPOption{
+						OptionType:   layers.TCPOptionKindWindowScale,
+						OptionLength: 1,
+						OptionData:   []byte{0x02}, // 4 (multiplied by2)
+					},
+					layers.TCPOption{
+						OptionType:   layers.TCPOptionKindSACKPermitted,
+						OptionLength: 1,
+						OptionData:   []byte{0x01}, // yes
+					},
+				*/
+			},
+		}
+
+		tcpLayer.SetNetworkLayerForChecksum(&ipLayer)
+
+		err := gopacket.SerializeLayers(f.buf, f.opts, &ipLayer, &tcpLayer)
+		if err != nil {
+			panic(fmt.Sprintf("error serializing ICMPv4 packet: %s", err))
+		}
+
+		f.router.log.Printf("sending ACK to client %s:%s", ipv4.SrcIP, tcp.SrcPort)
+		f.tunWch <- f.buf.Bytes()
+		return
+	}
+
+	if !tcp.SYN && tcp.ACK {
+		f.router.log.Printf("finished handshake with client %s:%s", ipv4.SrcIP, tcp.SrcPort)
+		f.Handshake(false)
+	}
 }
