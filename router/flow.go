@@ -83,7 +83,7 @@ type FlowHandler struct {
 }
 
 // ResetTimeOut will reset the timeout for this flow
-// It is called inside the handler everytime something happens in the flow
+// It is called inside the handler everytime the timeout needs to be extended
 func (f *FlowHandler) ResetTimeOut(extend time.Duration) {
 	timer := time.NewTimer(extend)
 	f.timeout = timer.C

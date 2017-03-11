@@ -113,6 +113,7 @@ func icmpFlowHandler(f *FlowHandler) {
 	var tunSrcIP net.IP
 	var tunDstIP net.IP
 
+	// shorthand to reset the timeout
 	timeout := func() { f.ResetTimeOut(2 * time.Second) }
 
 	for {
