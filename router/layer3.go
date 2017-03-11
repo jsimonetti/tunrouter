@@ -75,26 +75,6 @@ func (rwc *l3ReadWriteCloser) Close() error {
 	return fmt.Errorf("allready closed")
 }
 
-type OpenType int
-
-const (
-	_         OpenType = iota
-	OpenForL2 OpenType = iota
-	OpenForL3 OpenType = iota
-)
-
-func (r *router) Open(openType OpenType) (io.ReadWriteCloser, error) {
-	if openType == OpenForL3 {
-		fd := &l3ReadWriteCloser{
-			in:  make(chan l3Payload),
-			out: make(chan l3Payload),
-		}
-		go r.IPHandler(fd.in, fd.out)
-		return fd, nil
-	}
-	return nil, fmt.Errorf("opening for %#v is not accepted", openType)
-}
-
 func (r *router) IPHandler(rCh chan l3Payload, wCh chan l3Payload) {
 	handlerCh := make(chan []byte)
 	// handlerL3 is the handler for the L3 layer types
