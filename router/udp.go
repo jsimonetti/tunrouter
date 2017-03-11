@@ -19,12 +19,6 @@ func (r *router) HandleUDP(packet gopacket.Packet, wCh chan []byte) {
 		go r.udpSelfHandler(packet, wCh)
 		return
 	}
-	/*
-		if !r.isPrivileged {
-			r.log.Print("udp reveived, but disabled; running unpriviledged")
-			return
-		}
-	*/
 
 	flowHash := ipv4.NetworkFlow().FastHash()
 
@@ -57,7 +51,7 @@ func (r *router) HandleUDP(packet gopacket.Packet, wCh chan []byte) {
 // udpSelfHandler is a FlowHandler for handling udp directed to the router
 func (r *router) udpSelfHandler(packet gopacket.Packet, wCh chan []byte) {
 	// silently ignore UDP to self
-	r.log.Print("ignoring UDP packet to self of type")
+	r.log.Print("ignoring UDP packet to self")
 }
 
 // udpFlowHandler is a FlowHandler for handling transit udp traffic
@@ -86,6 +80,7 @@ func udpFlowHandler(f *FlowHandler) {
 
 			// unravel the tunData
 			ipv4 := tunData.NetworkLayer().(*layers.IPv4)
+			udp := tunData.Layers()[1].(*layers.UDP)
 
 			// open the remote connection if it was not open yet
 			if f.conn == nil {
@@ -102,8 +97,29 @@ func udpFlowHandler(f *FlowHandler) {
 			// start a read routine for this connection
 			go readNetData(f.conn, netRCh, netECh)
 
+			ipLayer := layers.IPv4{
+				SrcIP:    f.router.sourceIp,
+				DstIP:    ipv4.DstIP,
+				Protocol: ipv4.Protocol,
+			}
+
+			// build the forwarding layer
+			udpLayer := layers.UDP{
+				SrcPort: udp.SrcPort,
+				DstPort: udp.DstPort,
+				Length:  udp.Length,
+			}
+			udpLayer.SetNetworkLayerForChecksum(&ipLayer)
+
+			// serialize the layer into a buffer
+			err := gopacket.SerializeLayers(f.buf, f.opts, &udpLayer, gopacket.Payload(udp.BaseLayer.Payload))
+			if err != nil {
+				f.router.log.Printf("error serializing ICMPv4 packet: %s", err)
+				return
+			}
+
 			// write the buffer into the conn
-			if _, err := f.conn.Write(ipv4.Payload); err != nil {
+			if _, err := f.conn.Write(f.buf.Bytes()); err != nil {
 				f.router.log.Printf("WriteTo err, %s", err)
 				return
 			}
@@ -119,6 +135,7 @@ func udpFlowHandler(f *FlowHandler) {
 
 			// unravel the layers
 			ipv4 := packet.Layers()[0].(*layers.IPv4)
+			udp := packet.Layers()[1].(*layers.UDP)
 
 			// create the forwarding reply
 			ipLayer := layers.IPv4{
@@ -131,8 +148,16 @@ func udpFlowHandler(f *FlowHandler) {
 				Protocol: layers.IPProtocolUDP,
 			}
 
+			// build the forwarding layer
+			udpLayer := layers.UDP{
+				SrcPort: udp.SrcPort,
+				DstPort: udp.DstPort,
+				Length:  udp.Length,
+			}
+			udpLayer.SetNetworkLayerForChecksum(&ipLayer)
+
 			// serialize reply into bytes
-			err = gopacket.SerializeLayers(f.buf, f.opts, &ipLayer, gopacket.Payload(ipv4.Payload))
+			err = gopacket.SerializeLayers(f.buf, f.opts, &ipLayer, gopacket.Payload(udp.BaseLayer.Payload))
 			if err != nil {
 				f.router.log.Printf("error serializing UDP packet: %s", err)
 				return
