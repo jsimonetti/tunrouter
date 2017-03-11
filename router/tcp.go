@@ -2,13 +2,14 @@ package router
 
 import (
 	"fmt"
-	"net"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
 
-func (r *router) handleTCP(packet gopacket.Packet, wCh chan []byte) {
+// HandleTCP is the handler for TCP traffic
+// it selects a flowHandler from the FlowTable to handle the traffic
+func (r *router) HandleTCP(packet gopacket.Packet, wCh chan []byte) {
 	ipv4 := packet.NetworkLayer().(*layers.IPv4)
 
 	flowHash := ipv4.NetworkFlow().FastHash()
@@ -34,6 +35,7 @@ func (r *router) handleTCP(packet gopacket.Packet, wCh chan []byte) {
 	flowHandler.tunRCh <- packet
 }
 
+// tcpRst return the IP and TCP layers for a tcp RST of the specified layers
 func tcpRst(ipv4 *layers.IPv4, tcp *layers.TCP) (ipLayer layers.IPv4, tcpLayer layers.TCP) {
 	ipLayer = layers.IPv4{
 		Version:  4,
@@ -59,6 +61,7 @@ func tcpRst(ipv4 *layers.IPv4, tcp *layers.TCP) (ipLayer layers.IPv4, tcpLayer l
 	return
 }
 
+// tcpFlowHandler is a FlowHandler for handling transit tcp traffic
 func tcpFlowHandler(f *FlowHandler) {
 	defer f.Close()
 
@@ -78,38 +81,5 @@ func tcpFlowHandler(f *FlowHandler) {
 
 		f.tunWch <- f.buf.Bytes()
 		break
-	}
-}
-
-func TCPFlowHandler2(tunRCh chan []byte, tunWCh chan []byte) {
-	netRCh := make(chan []byte)
-	netECh := make(chan error)
-
-	var conn net.Conn
-
-	go func(netRCh chan []byte, netECh chan error) {
-		for {
-			// try to read the data
-			netData := make([]byte, 512)
-			_, err := conn.Read(netData)
-			if err != nil {
-				// send an error if it's encountered
-				netECh <- err
-				return
-			}
-			// send data if we read some.
-			netRCh <- netData
-		}
-	}(netRCh, netECh)
-
-	select {
-	case tunData := <-tunRCh: //data came in from TUN to this flow
-		// intermediate steps needed
-		conn.Write(tunData)
-	case netData := <-netRCh: //data came in from network to this flow
-		// intermediate steps needed
-		tunWCh <- netData
-	case _ = <-netECh: //error came in from network to this flow
-		close(tunRCh)
 	}
 }

@@ -78,7 +78,7 @@ type FlowHandler struct {
 	router *router
 }
 
-// Close will remote the FlowHandler from the FlowTable and close any open connections handled by it
+// Close will remove the FlowHandler from the FlowTable and close any open connections handled by it
 func (f *FlowHandler) Close() {
 	f.router.flowTable.Delete(f.flowHash)
 	close(f.tunRCh)
@@ -87,19 +87,23 @@ func (f *FlowHandler) Close() {
 	}
 }
 
+// readNetData will read data from conn and put it on channel netRCh
+// on error the error is forwarded to channel netECh
 func readNetData(conn net.Conn, netRCh chan []byte, netECh chan error) {
 	data := make([]byte, 4096)
 	for {
 		n, err := conn.Read(data)
 		if err != nil {
-			if n > 0 {
+			if n > 0 { // always write remaining bytes
 				netRCh <- data[:n]
 			}
+			// error io.EOF is a normal error for reading from a conn
 			if err != io.EOF {
 				netECh <- err
 			}
 			break
 		}
+		// put the read data in the channel
 		netRCh <- data[:n]
 	}
 }

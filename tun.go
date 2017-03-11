@@ -31,7 +31,12 @@ func New(config Config) *tun {
 		log: log.New(os.Stdout, "", log.Ldate|log.Lmicroseconds),
 	}
 
-	r := router.New(router.Config{Log: t.log})
+	r := router.New(router.Config{
+		Log:         t.log,
+		SelfIPv4:    []byte{0xc0, 0xa8, 0x01, 0x01}, // 192.168.1.1
+		NATSourceIp: []byte{0x0a, 0x0a, 0x01, 0xb6}, //10.10.1.182
+	})
+
 	t.handleIPv4 = r.HandleIPv4
 	t.handleIPv6 = r.HandleIPv6
 
