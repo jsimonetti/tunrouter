@@ -121,7 +121,7 @@ func icmpFlowHandler(f *FlowHandler) {
 	for {
 		select {
 		case <-f.timeout: // a timeout happend
-			f.router.log.Printf("icmp flow [%04x] timed out; src %#v(%s), dst %#v(%s)", f.flowHash, tunSrcIP, tunSrcIP, tunDstIP, tunDstIP)
+			f.router.log.Printf("icmp flow [%s] timed out; src %#v(%s), dst %#v(%s)", f.flowHash, tunSrcIP, tunSrcIP, tunDstIP, tunDstIP)
 			return
 		case tunData := <-f.tunRCh: // data came in from TUN to this flow
 			timeout()

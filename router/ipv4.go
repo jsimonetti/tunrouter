@@ -25,10 +25,10 @@ func (r *router) HandleIPv4(buff []byte, wCh chan []byte) {
 		handler = r.HandleICMPv4
 	case *layers.TCP:
 		// payload is TCP
-		handler = r.HandleTCP
+		handler = r.HandleTCP4
 	case *layers.UDP:
 		// payload is UDP
-		handler = r.HandleUDP
+		handler = r.HandleUDP4
 	default:
 		// other payload layer types are not supported
 		r.log.Printf("ipv4: unhandled sublayer type: %v", packet.Layers()[1])

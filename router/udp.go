@@ -9,14 +9,14 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-// HandleUDP is the handler for UDP traffic
+// HandleUDP4 is the handler for UDP traffic
 // it selects a flowHandler from the FlowTable to handle the traffic
-func (r *router) HandleUDP(packet gopacket.Packet, wCh chan []byte) {
+func (r *router) HandleUDP4(packet gopacket.Packet, wCh chan []byte) {
 	ipv4 := packet.NetworkLayer().(*layers.IPv4)
 
 	// handle udp to myself
 	if bytes.Equal(ipv4.DstIP, r.selfIPv4) {
-		go r.udpSelfHandler(packet, wCh)
+		go r.udp4SelfHandler(packet, wCh)
 		return
 	}
 
@@ -46,21 +46,21 @@ func (r *router) HandleUDP(packet gopacket.Packet, wCh chan []byte) {
 		flowHandler.router = r
 
 		// start an ICMP flow handler routine for this flow
-		go udpFlowHandler(flowHandler)
+		go udp4FlowHandler(flowHandler)
 	}
 
 	// send the packet to the flow handler
 	flowHandler.tunRCh <- packet
 }
 
-// udpSelfHandler is a FlowHandler for handling udp directed to the router
-func (r *router) udpSelfHandler(packet gopacket.Packet, wCh chan []byte) {
+// udp4SelfHandler is a FlowHandler for handling udp directed to the router
+func (r *router) udp4SelfHandler(packet gopacket.Packet, wCh chan []byte) {
 	// silently ignore UDP to self
 	r.log.Print("ignoring UDP packet to self")
 }
 
-// udpFlowHandler is a FlowHandler for handling transit udp traffic
-func udpFlowHandler(f *FlowHandler) {
+// udp4FlowHandler is a FlowHandler for handling transit udp traffic
+func udp4FlowHandler(f *FlowHandler) {
 	defer f.Close()
 	var err error
 
@@ -78,7 +78,7 @@ func udpFlowHandler(f *FlowHandler) {
 	for {
 		select {
 		case <-f.timeout: // a timeout happend
-			f.router.log.Printf("udp flow [%04x] timed out; src %#v(%s), dst %#v(%s)", f.flowHash, tunSrcIP, tunSrcIP, tunDstIP, tunDstIP)
+			f.router.log.Printf("udp flow [%s] timed out; src %#v(%s), dst %#v(%s)", f.flowHash, tunSrcIP, tunSrcIP, tunDstIP, tunDstIP)
 			return
 		case tunData := <-f.tunRCh: // data came in from TUN to this flow
 			timeout()
@@ -92,7 +92,7 @@ func udpFlowHandler(f *FlowHandler) {
 				tunSrcIP = ipv4.SrcIP
 				tunDstIP = ipv4.DstIP
 
-				f.conn, err = net.DialIP("ip4:udp", &net.IPAddr{IP: f.router.sourceIp}, &net.IPAddr{IP: tunDstIP})
+				f.conn, err = net.DialIP("ip:udp", &net.IPAddr{IP: f.router.sourceIp}, &net.IPAddr{IP: tunDstIP})
 				if err != nil {
 					f.router.log.Printf("dial err, %s", err)
 					return

@@ -86,6 +86,8 @@ type FlowHandler struct {
 	timeout <-chan time.Time // channel where a time.After channel is inserted
 
 	router *router
+
+	dialing bool // set to true while dialing out
 }
 
 // ResetTimeOut will reset the timeout for this flow
@@ -102,6 +104,11 @@ func (f *FlowHandler) Close() {
 	if f.conn != nil {
 		f.conn.Close()
 	}
+}
+
+// Dialing will set the handler to dial mode to drop retries from the client
+func (f *FlowHandler) Dialing(v bool) {
+	f.dialing = v
 }
 
 // readNetData will read data from conn and put it on channel netRCh
