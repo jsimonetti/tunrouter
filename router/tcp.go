@@ -20,6 +20,11 @@ func (r *router) HandleTCP(packet gopacket.Packet, wCh chan []byte) {
 		return
 	}
 
+	if !r.isPrivileged {
+		r.log.Print("tcp received, but disabled; running unpriviledged")
+		return
+	}
+
 	flowHash := hashOf(ipv4.NetworkFlow().FastHash(), packet.TransportLayer().TransportFlow().Dst().Raw(), packet.TransportLayer().TransportFlow().Src().Raw())
 
 	var flowHandler *FlowHandler
@@ -62,7 +67,7 @@ func (r *router) tcpSelfHandler(packet gopacket.Packet, wCh chan []byte) {
 		panic(fmt.Sprintf("error serializing ICMPv4 packet: %s", err))
 	}
 
-	r.log.Print("sending RST")
+	r.log.Print("ignoring TCP packet to self, sending RST")
 
 	wCh <- buf.Bytes()
 }

@@ -20,6 +20,11 @@ func (r *router) HandleUDP(packet gopacket.Packet, wCh chan []byte) {
 		return
 	}
 
+	if !r.isPrivileged {
+		r.log.Print("udp received, but disabled; running unpriviledged")
+		return
+	}
+
 	flowHash := hashOf(ipv4.NetworkFlow().FastHash(), packet.TransportLayer().TransportFlow().Dst().Raw(), packet.TransportLayer().TransportFlow().Src().Raw())
 
 	var err error
