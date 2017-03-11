@@ -126,9 +126,6 @@ func icmpFlowHandler(f *FlowHandler) {
 
 			// unravel the tunData
 			ipv4 := tunData.NetworkLayer().(*layers.IPv4)
-			icmp := tunData.Layers()[1].(*layers.ICMPv4)
-
-			f.router.log.Printf("handled icmpv4 for type: %s, src: %s, dst: %s", icmp.TypeCode, ipv4.SrcIP, ipv4.DstIP)
 
 			// open the remote connection if it was not open yet
 			if f.conn == nil {
@@ -145,22 +142,8 @@ func icmpFlowHandler(f *FlowHandler) {
 			// start a read routine for this connection
 			go readNetData(f.conn, netRCh, netECh)
 
-			// build the forwarding layer
-			icmpLayer := layers.ICMPv4{
-				TypeCode: icmp.TypeCode,
-				Id:       icmp.Id,
-				Seq:      icmp.Seq,
-			}
-
-			// serialize the layer into a buffer
-			err := gopacket.SerializeLayers(f.buf, f.opts, &icmpLayer, gopacket.Payload(icmp.BaseLayer.Payload))
-			if err != nil {
-				f.router.log.Printf("error serializing ICMPv4 packet: %s", err)
-				return
-			}
-
 			// write the buffer into the conn
-			if _, err := f.conn.Write(f.buf.Bytes()); err != nil {
+			if _, err := f.conn.Write(ipv4.Payload); err != nil {
 				f.router.log.Printf("WriteTo err, %s", err)
 				return
 			}
@@ -176,7 +159,6 @@ func icmpFlowHandler(f *FlowHandler) {
 
 			// unravel the layers
 			ipv4 := packet.Layers()[0].(*layers.IPv4)
-			icmp := packet.Layers()[1].(*layers.ICMPv4)
 
 			// create the forwarding reply
 			ipLayer := layers.IPv4{
@@ -188,14 +170,9 @@ func icmpFlowHandler(f *FlowHandler) {
 				DstIP:    tunSrcIP,
 				Protocol: layers.IPProtocolICMPv4,
 			}
-			icmpLayer2 := layers.ICMPv4{
-				TypeCode: icmp.TypeCode,
-				Id:       icmp.Id,
-				Seq:      icmp.Seq,
-			}
 
 			// serialize reply into bytes
-			err = gopacket.SerializeLayers(f.buf, f.opts, &ipLayer, &icmpLayer2, gopacket.Payload(icmp.BaseLayer.Payload))
+			err = gopacket.SerializeLayers(f.buf, f.opts, &ipLayer, gopacket.Payload(ipv4.Payload))
 			if err != nil {
 				f.router.log.Printf("error serializing ICMPv4 packet: %s", err)
 				return
