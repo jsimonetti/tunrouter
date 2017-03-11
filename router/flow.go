@@ -87,7 +87,8 @@ type FlowHandler struct {
 
 	router *router
 
-	dialing bool // set to true while dialing out
+	dialing     bool // set to true while dialing out
+	handShaking bool // set to true during hand with client
 }
 
 // ResetTimeOut will reset the timeout for this flow
@@ -109,6 +110,11 @@ func (f *FlowHandler) Close() {
 // Dialing will set the handler to dial mode to drop retries from the client
 func (f *FlowHandler) Dialing(v bool) {
 	f.dialing = v
+}
+
+// Handshake will set the handler to handshaking mode
+func (f *FlowHandler) Handshake(v bool) {
+	f.handShaking = v
 }
 
 // readNetData will read data from conn and put it on channel netRCh

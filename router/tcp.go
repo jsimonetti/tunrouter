@@ -126,6 +126,11 @@ func tcp4FlowHandler(f *FlowHandler) {
 		case tunData := <-f.tunRCh: // data came in from TUN to this flow
 			timeout()
 
+			// if this flow is not done clientside, finish the handshake
+			if f.handShaking {
+				finishTcp4Handshake(f, tunData)
+			}
+
 			// unravel the tunData
 			ipv4 := tunData.NetworkLayer().(*layers.IPv4)
 			tcp := tunData.Layers()[1].(*layers.TCP)
@@ -151,10 +156,9 @@ func tcp4FlowHandler(f *FlowHandler) {
 					f.conn = nil
 					return
 				}
+				f.Dialing(false)
+				finishTcp4Handshake(f, tunData)
 			}
-			f.Dialing(false)
-
-			finishTcp4Handshake(packet, wCh)
 
 			return
 
@@ -234,25 +238,6 @@ func tcp4FlowHandler(f *FlowHandler) {
 	}
 }
 
-// tcpFlowHandler is a FlowHandler for handling transit tcp traffic
-func tcpFlowHandler2(f *FlowHandler) {
-	defer f.Close()
+func finishTcp4Handshake(f *FlowHandler, packet gopacket.Packet) {
 
-	select {
-	case packet := <-f.tunRCh: // new packet incoming for this flowTable
-
-		ipv4 := packet.NetworkLayer().(*layers.IPv4)
-		tcp := packet.Layers()[1].(*layers.TCP)
-
-		ipLayer, tcpLayer := tcp4Rst(ipv4, tcp)
-		err := gopacket.SerializeLayers(f.buf, f.opts, &ipLayer, &tcpLayer)
-		if err != nil {
-			panic(fmt.Sprintf("error serializing ICMPv4 packet: %s", err))
-		}
-
-		f.router.log.Print("sending RST")
-
-		f.tunWch <- f.buf.Bytes()
-		break
-	}
 }
