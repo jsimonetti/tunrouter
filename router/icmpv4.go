@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -112,9 +113,16 @@ func icmpFlowHandler(f *FlowHandler) {
 	var tunSrcIP net.IP
 	var tunDstIP net.IP
 
+	timeout := func() { f.ResetTimeOut(2 * time.Second) }
+
 	for {
 		select {
-		case tunData := <-f.tunRCh: //data came in from TUN to this flow
+		case <-f.timeout: // a timeout happend
+			f.router.log.Printf("icmp flow [%04x] timed out; src %#v(%s), dst %#v(%s)", f.flowHash, tunSrcIP, tunSrcIP, tunDstIP, tunDstIP)
+			return
+		case tunData := <-f.tunRCh: // data came in from TUN to this flow
+			timeout()
+
 			// unravel the tunData
 			ipv4 := tunData.NetworkLayer().(*layers.IPv4)
 			icmp := tunData.Layers()[1].(*layers.ICMPv4)
@@ -155,8 +163,9 @@ func icmpFlowHandler(f *FlowHandler) {
 				f.router.log.Printf("WriteTo err, %s", err)
 				return
 			}
+		case netData := <-netRCh: // data came in from network to this flow
+			timeout()
 
-		case netData := <-netRCh: //data came in from network to this flow
 			// unmarshal data from the network into a packet
 			packet := gopacket.NewPacket(netData, layers.LayerTypeIPv4, gopacket.Default)
 			if err := packet.ErrorLayer(); err != nil {
@@ -193,8 +202,9 @@ func icmpFlowHandler(f *FlowHandler) {
 
 			// send bytes to tun interface
 			f.tunWch <- f.buf.Bytes()
+		case err = <-netECh: // error came in from network to this flow
+			timeout()
 
-		case err = <-netECh: //error came in from network to this flow
 			f.router.log.Printf("icmp net read error: %s", err)
 			return
 		}

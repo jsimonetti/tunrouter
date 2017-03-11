@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/google/gopacket"
 )
@@ -47,6 +48,7 @@ func (f *FlowTable) New(flowHash uint64) *FlowHandler {
 		},
 		tunRCh: make(chan gopacket.Packet),
 	}
+	handler.ResetTimeOut(10 * time.Second)
 
 	// check first if it doesn't exist
 	if _, ok := f.flowMap[flowHash]; !ok {
@@ -75,7 +77,16 @@ type FlowHandler struct {
 	buf  gopacket.SerializeBuffer  // buffer for creating packets
 	opts gopacket.SerializeOptions // serialization option
 
+	timeout <-chan time.Time // channel where a time.After channel is inserted
+
 	router *router
+}
+
+// ResetTimeOut will reset the timeout for this flow
+// It is called inside the handler everytime something happens in the flow
+func (f *FlowHandler) ResetTimeOut(extend time.Duration) {
+	timer := time.NewTimer(extend)
+	f.timeout = timer.C
 }
 
 // Close will remove the FlowHandler from the FlowTable and close any open connections handled by it
