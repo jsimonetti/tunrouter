@@ -10,6 +10,8 @@ import (
 // HandleTCP is the handler for TCP traffic
 // it selects a flowHandler from the FlowTable to handle the traffic
 func (r *router) HandleTCP(packet gopacket.Packet, wCh chan []byte) {
+	var err error
+
 	ipv4 := packet.NetworkLayer().(*layers.IPv4)
 
 	flowHash := ipv4.NetworkFlow().FastHash()
@@ -17,7 +19,7 @@ func (r *router) HandleTCP(packet gopacket.Packet, wCh chan []byte) {
 	var flowHandler *FlowHandler
 
 	// check if an existing flowHandler is allread in the flowTable.
-	if flowHandler, err := r.flowTable.Get(flowHash); err != nil {
+	if flowHandler, err = r.flowTable.Get(flowHash); err != nil {
 		if err != errNoSuchFlow {
 			r.log.Print("error getting existing flow handler: %s", err)
 			return
