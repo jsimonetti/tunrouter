@@ -20,7 +20,7 @@ func (r *router) HandleUDP(packet gopacket.Packet, wCh chan []byte) {
 		return
 	}
 
-	flowHash := ipv4.NetworkFlow().FastHash()
+	flowHash := hashOf(ipv4.NetworkFlow().FastHash(), packet.TransportLayer().TransportFlow().Dst().Raw(), packet.TransportLayer().TransportFlow().Src().Raw())
 
 	var err error
 	var flowHandler *FlowHandler

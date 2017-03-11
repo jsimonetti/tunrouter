@@ -14,6 +14,7 @@ import (
 // it selects a flowHandler from the FlowTable to handle the traffic
 func (r *router) HandleICMPv4(packet gopacket.Packet, wCh chan []byte) {
 	ipv4 := packet.NetworkLayer().(*layers.IPv4)
+	icmp := packet.Layers()[1].(*layers.ICMPv4)
 
 	// handle icmp to myself
 	if bytes.Equal(ipv4.DstIP, r.selfIPv4) {
@@ -25,7 +26,7 @@ func (r *router) HandleICMPv4(packet gopacket.Packet, wCh chan []byte) {
 		return
 	}
 
-	flowHash := ipv4.NetworkFlow().FastHash()
+	flowHash := hashOf(ipv4.NetworkFlow().FastHash(), []byte{icmp.TypeCode.Type()}, []byte{icmp.TypeCode.Code()})
 
 	var err error
 	var flowHandler *FlowHandler
@@ -114,7 +115,7 @@ func icmpFlowHandler(f *FlowHandler) {
 	var tunDstIP net.IP
 
 	// shorthand to reset the timeout
-	timeout := func() { f.ResetTimeOut(2 * time.Second) }
+	timeout := func() { f.ResetTimeOut(5 * time.Second) }
 
 	for {
 		select {

@@ -1,6 +1,7 @@
 package router
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/google/gopacket"
@@ -11,10 +12,15 @@ import (
 // it selects a flowHandler from the FlowTable to handle the traffic
 func (r *router) HandleTCP(packet gopacket.Packet, wCh chan []byte) {
 	var err error
-
 	ipv4 := packet.NetworkLayer().(*layers.IPv4)
 
-	flowHash := ipv4.NetworkFlow().FastHash()
+	// handle tcp to myself
+	if bytes.Equal(ipv4.DstIP, r.selfIPv4) {
+		go r.tcpSelfHandler(packet, wCh)
+		return
+	}
+
+	flowHash := hashOf(ipv4.NetworkFlow().FastHash(), packet.TransportLayer().TransportFlow().Dst().Raw(), packet.TransportLayer().TransportFlow().Src().Raw())
 
 	var flowHandler *FlowHandler
 
@@ -35,6 +41,30 @@ func (r *router) HandleTCP(packet gopacket.Packet, wCh chan []byte) {
 	}
 
 	flowHandler.tunRCh <- packet
+}
+
+// tcpSelfHandler is a FlowHandler for handling tcp directed to the router
+func (r *router) tcpSelfHandler(packet gopacket.Packet, wCh chan []byte) {
+
+	ipv4 := packet.NetworkLayer().(*layers.IPv4)
+	tcp := packet.Layers()[1].(*layers.TCP)
+
+	ipLayer, tcpLayer := tcpRst(ipv4, tcp)
+
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true,
+		ComputeChecksums: true,
+	}
+
+	err := gopacket.SerializeLayers(buf, opts, &ipLayer, &tcpLayer)
+	if err != nil {
+		panic(fmt.Sprintf("error serializing ICMPv4 packet: %s", err))
+	}
+
+	r.log.Print("sending RST")
+
+	wCh <- buf.Bytes()
 }
 
 // tcpRst return the IP and TCP layers for a tcp RST of the specified layers

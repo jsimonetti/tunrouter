@@ -2,6 +2,7 @@ package router
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -15,16 +16,21 @@ var (
 	errNoSuchFlow = errors.New("no such flowHash")
 )
 
+// hashOf returns the hashstring of the parameters
+func hashOf(ipv4Flow uint64, src []byte, dst []byte) string {
+	return fmt.Sprintf("%d-%04x-%04x", ipv4Flow, src, dst)
+}
+
 // FlowTable holds a map to FlowHandlers keyed by a flowHash
 // the hash if of type flow.FastHash()
 type FlowTable struct {
 	lock    sync.Mutex
-	flowMap map[uint64]*FlowHandler
+	flowMap map[string]*FlowHandler
 }
 
 // Get attempts to return the FlowHandler for a flowHash
 // If none can be found errNoSuchFlow is returned
-func (f *FlowTable) Get(flowHash uint64) (*FlowHandler, error) {
+func (f *FlowTable) Get(flowHash string) (*FlowHandler, error) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	if handler, ok := f.flowMap[flowHash]; ok {
@@ -34,7 +40,7 @@ func (f *FlowTable) Get(flowHash uint64) (*FlowHandler, error) {
 }
 
 // New allocates a new FlowHandler and add it to the FlowTable for the given flowHash
-func (f *FlowTable) New(flowHash uint64) *FlowHandler {
+func (f *FlowTable) New(flowHash string) *FlowHandler {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 
@@ -59,7 +65,7 @@ func (f *FlowTable) New(flowHash uint64) *FlowHandler {
 }
 
 // Delete removes a FlowHandler from the FlowTable
-func (f *FlowTable) Delete(flowHash uint64) {
+func (f *FlowTable) Delete(flowHash string) {
 	f.lock.Lock()
 	delete(f.flowMap, flowHash)
 	f.lock.Unlock()
@@ -67,7 +73,7 @@ func (f *FlowTable) Delete(flowHash uint64) {
 
 // FlowHandler is a structure for a single handler of a flowHash
 type FlowHandler struct {
-	flowHash uint64 // save my hash
+	flowHash string // save my hash
 
 	tunRCh chan gopacket.Packet // channel this handler will accept data on from the tunnel
 	tunWch chan []byte          // channel this handler will send data to the tunnel
