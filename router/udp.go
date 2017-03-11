@@ -97,10 +97,9 @@ func udp4FlowHandler(f *FlowHandler) {
 					f.router.log.Printf("dial err, %s", err)
 					return
 				}
+				// start a read routine for this connection
+				go readNetData(f.conn, netRCh, netECh)
 			}
-
-			// start a read routine for this connection
-			go readNetData(f.conn, netRCh, netECh)
 
 			ipLayer := layers.IPv4{
 				SrcIP:    f.router.sourceIp,

@@ -139,10 +139,9 @@ func icmpFlowHandler(f *FlowHandler) {
 					f.router.log.Printf("dial err, %s", err)
 					return
 				}
+				// start a read routine for this connection
+				go readNetData(f.conn, netRCh, netECh)
 			}
-
-			// start a read routine for this connection
-			go readNetData(f.conn, netRCh, netECh)
 
 			// write the buffer into the conn
 			if _, err := f.conn.Write(ipv4.Payload); err != nil {

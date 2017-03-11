@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/google/gopacket"
@@ -114,6 +115,8 @@ func tcp4FlowHandler(f *FlowHandler) {
 	// globally save the original tunnel source and destination ip's for further use
 	var tunSrcIP net.IP
 	var tunDstIP net.IP
+	var tunSrcPort int
+	var netSrcPort int
 
 	// shorthand to reset the timeout
 	timeout := func() { f.ResetTimeOut(30 * time.Second) }
@@ -158,6 +161,15 @@ func tcp4FlowHandler(f *FlowHandler) {
 					f.conn = nil
 					return
 				}
+				// save the ports used in this flow
+				tunSrcPort = int(tcp.SrcPort)
+				_, port, _ := net.SplitHostPort(f.conn.LocalAddr().String())
+				netSrcPort, _ = strconv.Atoi(port)
+
+				// start a read routine for this connection
+				go readNetData(f.conn, netRCh, netECh)
+
+				// finish dialing and start handshake clientside
 				f.Dialing(false)
 				f.Handshake(true)
 				finishTcp4Handshake(f, tunData)
@@ -167,17 +179,41 @@ func tcp4FlowHandler(f *FlowHandler) {
 			// start a read routine for this connection
 			go readNetData(f.conn, netRCh, netECh)
 
+			// create the forwarding reply
 			ipLayer := layers.IPv4{
-				SrcIP:    f.router.sourceIp,
-				DstIP:    ipv4.DstIP,
-				Protocol: ipv4.Protocol,
+				Version:    4,
+				TTL:        ipv4.TTL - 1,
+				TOS:        ipv4.TOS,
+				Id:         ipv4.Id,
+				SrcIP:      f.router.sourceIp,
+				DstIP:      ipv4.DstIP,
+				Protocol:   layers.IPProtocolTCP,
+				Flags:      ipv4.Flags,
+				FragOffset: ipv4.FragOffset,
+				Options:    ipv4.Options,
 			}
 
 			// build the forwarding layer
 			tcpLayer := layers.TCP{
-				SrcPort: tcp.SrcPort,
-				DstPort: tcp.DstPort,
+				SrcPort:    layers.TCPPort(netSrcPort),
+				DstPort:    tcp.DstPort,
+				Seq:        tcp.Seq,
+				Ack:        tcp.Ack,
+				DataOffset: tcp.DataOffset,
+				Window:     tcp.Window,
+				Urgent:     tcp.Urgent,
+				Options:    tcp.Options,
+				FIN:        tcp.FIN,
+				SYN:        tcp.SYN,
+				RST:        tcp.RST,
+				PSH:        tcp.PSH,
+				ACK:        tcp.ACK,
+				URG:        tcp.URG,
+				ECE:        tcp.ECE,
+				CWR:        tcp.CWR,
+				NS:         tcp.NS,
 			}
+
 			tcpLayer.SetNetworkLayerForChecksum(&ipLayer)
 
 			// serialize the layer into a buffer
@@ -198,7 +234,7 @@ func tcp4FlowHandler(f *FlowHandler) {
 			// unmarshal data from the network into a packet
 			packet := gopacket.NewPacket(netData, layers.LayerTypeIPv4, gopacket.Default)
 			if err := packet.ErrorLayer(); err != nil {
-				f.router.log.Printf("Error decoding some part of the packet: %s", err)
+				f.router.log.Printf("Error decoding some part of the net packet: %s", err)
 				return
 			}
 
@@ -208,20 +244,39 @@ func tcp4FlowHandler(f *FlowHandler) {
 
 			// create the forwarding reply
 			ipLayer := layers.IPv4{
-				Version:  4,
-				TTL:      ipv4.TTL - 1,
-				TOS:      ipv4.TOS,
-				Id:       ipv4.Id,
-				SrcIP:    tunDstIP,
-				DstIP:    tunSrcIP,
-				Protocol: layers.IPProtocolTCP,
+				Version:    4,
+				TTL:        ipv4.TTL - 1,
+				TOS:        ipv4.TOS,
+				Id:         ipv4.Id,
+				SrcIP:      tunDstIP,
+				DstIP:      tunSrcIP,
+				Protocol:   layers.IPProtocolTCP,
+				Flags:      ipv4.Flags,
+				FragOffset: ipv4.FragOffset,
+				Options:    ipv4.Options,
 			}
 
 			// build the forwarding layer
 			tcpLayer := layers.TCP{
-				SrcPort: tcp.SrcPort,
-				DstPort: tcp.DstPort,
+				SrcPort:    tcp.SrcPort,
+				DstPort:    layers.TCPPort(tunSrcPort),
+				Seq:        tcp.Seq,
+				Ack:        tcp.Ack,
+				DataOffset: tcp.DataOffset,
+				Window:     tcp.Window,
+				Urgent:     tcp.Urgent,
+				Options:    tcp.Options,
+				FIN:        tcp.FIN,
+				SYN:        tcp.SYN,
+				RST:        tcp.RST,
+				PSH:        tcp.PSH,
+				ACK:        tcp.ACK,
+				URG:        tcp.URG,
+				ECE:        tcp.ECE,
+				CWR:        tcp.CWR,
+				NS:         tcp.NS,
 			}
+
 			tcpLayer.SetNetworkLayerForChecksum(&ipLayer)
 
 			// serialize reply into bytes
@@ -266,25 +321,24 @@ func finishTcp4Handshake(f *FlowHandler, tunData gopacket.Packet) {
 			ACK:     true,
 			SYN:     true,
 			Window:  0x7210,
-			Options: []layers.TCPOption{
+			Options: tcp.Options,
+			/* []layers.TCPOption{
 				layers.TCPOption{
 					OptionType:   layers.TCPOptionKindMSS,
 					OptionLength: 2,
 					OptionData:   []byte{0x05, 0xb4}, // default of 1460
 				},
-				/*
-					layers.TCPOption{
-						OptionType:   layers.TCPOptionKindWindowScale,
-						OptionLength: 1,
-						OptionData:   []byte{0x02}, // 4 (multiplied by2)
-					},
-					layers.TCPOption{
-						OptionType:   layers.TCPOptionKindSACKPermitted,
-						OptionLength: 1,
-						OptionData:   []byte{0x01}, // yes
-					},
-				*/
-			},
+				layers.TCPOption{
+					OptionType:   layers.TCPOptionKindWindowScale,
+					OptionLength: 1,
+					OptionData:   []byte{0x02}, // 4 (multiplied by2)
+				},
+				layers.TCPOption{
+					OptionType:   layers.TCPOptionKindSACKPermitted,
+					OptionLength: 1,
+					OptionData:   []byte{0x01}, // yes
+				},
+			},*/
 		}
 
 		tcpLayer.SetNetworkLayerForChecksum(&ipLayer)
@@ -299,8 +353,8 @@ func finishTcp4Handshake(f *FlowHandler, tunData gopacket.Packet) {
 		return
 	}
 
-	if !tcp.SYN && tcp.ACK {
-		f.router.log.Printf("finished handshake with client %s:%s", ipv4.SrcIP, tcp.SrcPort)
-		f.Handshake(false)
-	}
+	//	if !tcp.SYN && tcp.ACK {
+	f.router.log.Printf("finished handshake with client %s:%s", ipv4.SrcIP, tcp.SrcPort)
+	f.handShaking = false
+	//	}
 }
