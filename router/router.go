@@ -16,10 +16,11 @@ type Config struct {
 
 // router holds some configuration data and the FlowTable
 type router struct {
-	log       *log.Logger
-	selfIPv4  net.IP
-	sourceIp  net.IP
-	flowTable FlowTable
+	log          *log.Logger
+	selfIPv4     net.IP
+	sourceIp     net.IP
+	isPrivileged bool
+	flowTable    FlowTable
 }
 
 // New returns an instance of router with the specified configuration
@@ -31,6 +32,7 @@ func New(config Config) Router {
 		flowTable: FlowTable{
 			flowMap: make(map[uint64]*FlowHandler),
 		},
+		isPrivileged: runningPrivileged(),
 	}
 }
 
@@ -81,4 +83,13 @@ func (r *router) Open(openType Mode) (io.ReadWriteCloser, error) {
 		return fd, nil
 	}
 	return nil, fmt.Errorf("opening for %#v is not accepted", openType)
+}
+
+func runningPrivileged() bool {
+	conn, err := net.DialIP("ip4:icmp", &net.IPAddr{IP: net.ParseIP("127.0.0.1")}, &net.IPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	return true
 }

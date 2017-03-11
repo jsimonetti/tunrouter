@@ -91,6 +91,13 @@ func (rwc *l3ReadWriteCloser) Close() error {
 // Data is flowing into the router via channel rCh and out via channel wCh
 // It is an interface between the RWC and the routers' IP various handlers
 func (r *router) IPHandler(rCh chan l3Payload, wCh chan l3Payload) {
+	r.log.Printf("Router started in L3Mode")
+	if r.isPrivileged {
+		r.log.Printf("Running in privileged mode; icmp is enabled")
+	} else {
+		r.log.Printf("Running is unprivileged mode; icmp is disable")
+	}
+
 	handlerCh := make(chan []byte)
 
 	// handlerL3 is the handler for the L3 layer types

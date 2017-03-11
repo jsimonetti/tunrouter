@@ -16,7 +16,11 @@ func (r *router) HandleICMPv4(packet gopacket.Packet, wCh chan []byte) {
 
 	// handle icmp to myself
 	if bytes.Equal(ipv4.DstIP, r.selfIPv4) {
-		r.icmpSelfHandler(packet, wCh)
+		go r.icmpSelfHandler(packet, wCh)
+		return
+	}
+	if !r.isPrivileged {
+		r.log.Print("icmpv4 reveived, but disabled; running unpriviledged")
 		return
 	}
 
