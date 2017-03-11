@@ -85,6 +85,8 @@ func (r *router) Open(openType Mode) (io.ReadWriteCloser, error) {
 	return nil, fmt.Errorf("opening for %#v is not accepted", openType)
 }
 
+// runningPrivileged will check if raw icmp is available
+// raw icmp is needed for ICMP handling
 func runningPrivileged() bool {
 	conn, err := net.DialIP("ip4:icmp", &net.IPAddr{IP: net.ParseIP("127.0.0.1")}, &net.IPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
