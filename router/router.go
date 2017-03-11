@@ -1,6 +1,8 @@
 package router
 
 import (
+	"fmt"
+	"io"
 	"log"
 	"net"
 
@@ -34,6 +36,21 @@ func New(config Config) Router {
 	}
 }
 
+type OpenType int
+
+const (
+	_         OpenType = iota
+	OpenForL2 OpenType = iota
+	OpenForL3 OpenType = iota
+)
+
+func (r *router) Open(openType OpenType) (io.ReadWriteCloser, error) {
+	if openType == OpenForL3 {
+		return &l3ReadWriteCloser{}, nil
+	}
+	return nil, fmt.Errorf("opening for %#v is not accepted", openType)
+}
+
 // Router is an interface for a tunnel router
 type Router interface {
 	HandleIPv4(buff []byte, wCh chan []byte)
@@ -42,6 +59,7 @@ type Router interface {
 	HandleICMPv6(packet gopacket.Packet, wCh chan []byte)
 	HandleTCP(packet gopacket.Packet, wCh chan []byte)
 	HandleUDP(packet gopacket.Packet, wCh chan []byte)
+	Open(OpenType) (io.ReadWriteCloser, error)
 }
 
 // make sure router implements Router
