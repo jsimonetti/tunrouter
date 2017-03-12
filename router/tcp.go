@@ -213,7 +213,7 @@ func (t *tcp4FlowHandler) sendSendBuffer(myTicker chan bool) {
 }
 
 func (t *tcp4FlowHandler) flushRecvBuffer() {
-	t.FlowHandler.router.log.Printf("flushing recvBuffer now")
+	///t.FlowHandler.router.log.Printf("flushing recvBuffer now")
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
@@ -221,7 +221,7 @@ func (t *tcp4FlowHandler) flushRecvBuffer() {
 	t.recvBuffer = []byte{}
 	if err != nil {
 		t.FlowHandler.router.log.Printf("error flushing recvBuffer: %s", err)
-		t._close()
+		t.close()
 	}
 }
 
@@ -338,7 +338,7 @@ func (t *tcp4FlowHandler) next_seq(tcp *layers.TCP) uint32 {
 
 func (t *tcp4FlowHandler) _close() {
 	t.state = stateClosed
-	//	t.FlowHandler.Close()
+	//t.FlowHandler.Close()
 }
 
 func (t *tcp4FlowHandler) send(data []byte) {
@@ -363,7 +363,8 @@ func (t *tcp4FlowHandler) loop() {
 		case <-t.FlowHandler.timeout: // a timeout happend
 			t.FlowHandler.router.log.Printf("tcp flow [%s] timed out; src %s:%d, dst %s:%d", t.FlowHandler.flowHash, t.srcIp, t.srcPort, t.dstIp, t.dstPort)
 			spew.Dump(t.recvBuffer)
-			t._close()
+			t.close()
+			return
 		case tunData := <-t.FlowHandler.tunRCh:
 			timeout()
 
@@ -422,7 +423,7 @@ func (t *tcp4FlowHandler) loop() {
 					err := t.dialUpstream()
 					if err != nil {
 						t.FlowHandler.router.log.Printf("upstream connection failed: %s", err)
-						t._close()
+						t.close()
 						break
 					}
 					go readNetData2(t.conn, netRCh)
