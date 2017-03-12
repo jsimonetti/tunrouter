@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
@@ -44,12 +46,12 @@ func (r *router) HandleTCP4(packet gopacket.Packet, wCh chan []byte) {
 		flowHandler.tunWch = wCh
 		flowHandler.router = r
 
-		go tcp4FlowHandler(flowHandler)
+		go startTCP4FlowHandler(flowHandler)
 	}
 
-	if !flowHandler.dialing {
-		flowHandler.tunRCh <- packet
-	}
+	//	if !flowHandler.dialing {
+	flowHandler.tunRCh <- packet
+	//	}
 }
 
 // tcp4SelfHandler is a FlowHandler for handling tcp directed to the router
@@ -102,139 +104,406 @@ func tcp4Rst(ipv4 *layers.IPv4, tcp *layers.TCP) (ipLayer layers.IPv4, tcpLayer 
 	return
 }
 
-// tcp4FlowHandler is a FlowHandler for handling transit tcp traffic
-func tcp4FlowHandler(f *FlowHandler) {
-	defer f.Close()
-	var err error
+type tcpFlag uint8
 
-	// channels to use for the readRoutine
-	netRCh := make(chan l3Payload)
+const (
+	_ tcpFlag = iota
+	flagFIN
+	flagSYN
+	flagRST
+	flagPSH
+	flagACK
+	flagURG
+	flagECE
+	flagCWR
+	flagNS
+)
 
-	// globally save the original tunnel source and destination ip's for further use
-	var tunSrcIP net.IP
-	var tunDstIP net.IP
-	var tunSrcPort int
-	var tunSeq uint32
+type tcpState uint8
 
+const (
+	stateListen tcpState = iota
+	stateSynReceived
+	stateSynSent
+	stateEstablished
+	stateLastAck
+	stateFinWait1
+	stateClosed
+)
+
+func flagsFromTcpLayer(tcp *layers.TCP) tcpFlags {
+	flags := make(tcpFlags)
+	if tcp.ACK {
+		flags[flagACK] = true
+	}
+	if tcp.CWR {
+		flags[flagCWR] = true
+	}
+	if tcp.ECE {
+		flags[flagECE] = true
+	}
+	if tcp.FIN {
+		flags[flagFIN] = true
+	}
+	if tcp.NS {
+		flags[flagNS] = true
+	}
+	if tcp.PSH {
+		flags[flagPSH] = true
+	}
+	if tcp.RST {
+		flags[flagRST] = true
+	}
+	if tcp.URG {
+		flags[flagURG] = true
+	}
+	if tcp.SYN {
+		flags[flagSYN] = true
+	}
+	return flags
+}
+
+type tcpFlags map[tcpFlag]bool
+
+func newTCP4FlowHandler(f *FlowHandler) *tcp4FlowHandler {
+	return &tcp4FlowHandler{
+		FlowHandler: f,
+		state:       stateClosed,
+		sequence:    0,
+	}
+}
+
+type tcp4FlowHandler struct {
+	*FlowHandler
+
+	srcIp   net.IP
+	dstIp   net.IP
+	srcPort uint16
+	dstPort uint16
+
+	lock       sync.Mutex
+	recvBuffer []byte
+	sendBuffer []byte
+
+	state tcpState
+
+	sequence    uint32 // my sequence number
+	lastAckSent uint32 // last client seq nr i acked
+
+	conn net.Conn // upstream connection
+}
+
+func (t *tcp4FlowHandler) sendSendBuffer(myTicker chan bool) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	l := len(t.sendBuffer)
+	if l > 0 {
+		if l > 1460 {
+			t.send(t.sendBuffer[:1460])
+			t.sendBuffer = t.sendBuffer[1460:]
+
+			// imediate tick again to continue sending the buffer
+			myTicker <- true
+			return
+		}
+		t.send(t.sendBuffer)
+		t.sendBuffer = []byte{}
+	}
+}
+
+func (t *tcp4FlowHandler) flushRecvBuffer() {
+	t.FlowHandler.router.log.Printf("flushing recvBuffer now")
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	_, err := t.conn.Write(t.recvBuffer)
+	t.recvBuffer = []byte{}
+	if err != nil {
+		t.FlowHandler.router.log.Printf("error flushing recvBuffer: %s", err)
+		t._close()
+	}
+}
+
+func (t *tcp4FlowHandler) dialUpstream() (err error) {
+	dst := fmt.Sprintf("%s:%d", t.dstIp, int(t.dstPort))
+
+	tcpAddr := &net.TCPAddr{
+		IP: t.FlowHandler.router.sourceIp,
+	}
+
+	dialer := net.Dialer{
+		Timeout:   1 * time.Second,
+		LocalAddr: tcpAddr,
+	}
+
+	t.conn, err = dialer.Dial("tcp4", dst)
+	return
+}
+
+func (t *tcp4FlowHandler) buildPacket() (layers.IPv4, layers.TCP) {
+	// create the ip layer
+	ipLayer := layers.IPv4{
+		Version:  4,
+		TTL:      64,
+		SrcIP:    t.dstIp,
+		DstIP:    t.srcIp,
+		Protocol: layers.IPProtocolTCP,
+	}
+
+	// create the tcp layer
+	tcpLayer := layers.TCP{
+		SrcPort: layers.TCPPort(t.dstPort),
+		DstPort: layers.TCPPort(t.srcPort),
+		Seq:     t.sequence,
+		Ack:     t.lastAckSent,
+		Window:  0x1000,
+	}
+	tcpLayer.SetNetworkLayerForChecksum(&ipLayer)
+	return ipLayer, tcpLayer
+}
+
+// _send should be the function every outbound packet goes through
+func (t *tcp4FlowHandler) _send(flags []tcpFlag, payload gopacket.Payload) {
+	// every packet we send should go through here.
+	ipLayer, tcpLayer := t.buildPacket()
+
+	for _, f := range flags {
+		switch f {
+		case flagACK:
+			tcpLayer.ACK = true
+		case flagCWR:
+			tcpLayer.CWR = true
+		case flagECE:
+			tcpLayer.ECE = true
+		case flagFIN:
+			tcpLayer.FIN = true
+		case flagNS:
+			tcpLayer.NS = true
+		case flagPSH:
+			tcpLayer.PSH = true
+		case flagRST:
+			tcpLayer.RST = true
+		case flagURG:
+			tcpLayer.URG = true
+		case flagSYN:
+			tcpLayer.SYN = true
+		}
+	}
+
+	// serialize reply into bytes
+	err := gopacket.SerializeLayers(t.FlowHandler.buf, t.FlowHandler.opts, &ipLayer, &tcpLayer, payload)
+	if err != nil {
+		t.FlowHandler.router.log.Printf("error serializing TCP packet for _send: %s", err)
+		return
+	}
+
+	t.FlowHandler.tunWch <- t.FlowHandler.buf.Bytes()
+
+	if len(payload) > 0 {
+		t.sequence += uint32(len(payload))
+	}
+}
+
+func (t *tcp4FlowHandler) _send_syn() {
+	t.state = stateSynSent
+	t._send([]tcpFlag{flagSYN}, nil)
+}
+
+func (t *tcp4FlowHandler) _send_ack(flags []tcpFlag, data []byte) {
+	t._send(append(flags, flagACK), data)
+}
+
+func (t *tcp4FlowHandler) close() {
+	if t.state != stateClosed {
+		t.state = stateFinWait1
+		t._send_ack([]tcpFlag{flagFIN}, nil)
+	}
+}
+
+func (t *tcp4FlowHandler) next_seq(tcp *layers.TCP) uint32 {
+	flags := flagsFromTcpLayer(tcp)
+
+	if len(tcp.Payload) > 0 {
+		return tcp.Seq + uint32(len(tcp.Payload))
+	}
+	if _, ok := flags[flagSYN]; ok {
+		return tcp.Seq + 1
+	}
+	if _, ok := flags[flagFIN]; ok {
+		return tcp.Seq + 1
+	}
+	return t.sequence
+}
+
+func (t *tcp4FlowHandler) _close() {
+	t.state = stateClosed
+	//	t.FlowHandler.Close()
+}
+
+func (t *tcp4FlowHandler) send(data []byte) {
+	for {
+		if t.state == stateEstablished {
+			break
+		}
+		time.Sleep(1 * time.Nanosecond)
+	}
+	t._send_ack([]tcpFlag{flagPSH}, data)
+}
+
+func (t *tcp4FlowHandler) loop() {
 	// shorthand to reset the timeout
-	timeout := func() { f.ResetTimeOut(30 * time.Second) }
+	timeout := func() { t.FlowHandler.ResetTimeOut(30 * time.Second) }
+	netRCh := make(chan l3Payload)
+	ticker := time.NewTicker(time.Millisecond * 1)
+	sendTicker := make(chan bool)
 
 	for {
-	START:
 		select {
-		case <-f.timeout: // a timeout happend
-			f.router.log.Printf("tcp flow [%s] timed out; src %#v(%s), dst %#v(%s)", f.flowHash, tunSrcIP, tunSrcIP, tunDstIP, tunDstIP)
-			return
-		case tunData := <-f.tunRCh: // data came in from TUN to this flow
+		case <-t.FlowHandler.timeout: // a timeout happend
+			t.FlowHandler.router.log.Printf("tcp flow [%s] timed out; src %s:%d, dst %s:%d", t.FlowHandler.flowHash, t.srcIp, t.srcPort, t.dstIp, t.dstPort)
+			spew.Dump(t.recvBuffer)
+			t._close()
+		case tunData := <-t.FlowHandler.tunRCh:
 			timeout()
-
-			// if this flow is not done clientside, finish the handshake
-			if f.handShaking {
-				finishTcp4Handshake(f, tunData)
-				goto START
-			}
 
 			// unravel the tunData
-			ipv4 := tunData.NetworkLayer().(*layers.IPv4)
-			tcp := tunData.Layers()[1].(*layers.TCP)
+			var ok bool
+			var ipv4 *layers.IPv4
+			if ipv4, ok = tunData.NetworkLayer().(*layers.IPv4); !ok {
+				// not a tcp packet, drop
+				t.FlowHandler.router.log.Printf("received a non-ipv4 packet %#v", tunData.NetworkLayer())
+				break
+			}
+			var tcp *layers.TCP
+			if tcp, ok = tunData.TransportLayer().(*layers.TCP); !ok {
+				// not a tcp packet, drop
+				t.FlowHandler.router.log.Printf("received a non-tcp packet %#v", tunData.TransportLayer())
+				break
+			}
+			t.srcIp = ipv4.SrcIP
+			t.dstIp = ipv4.DstIP
+			t.srcPort = uint16(tcp.SrcPort)
+			t.dstPort = uint16(tcp.DstPort)
 
-			f.tunSeq += uint32(len(tcp.Payload))
-
-			// open the remote connection if it was not open yet
-			if f.conn == nil {
-				f.Dialing(true)
-				tunSrcIP = ipv4.SrcIP
-				tunDstIP = ipv4.DstIP
-
-				f.router.log.Printf("tcp flow [%s] created; src %s:%s, dst %s:%d", f.flowHash, ipv4.SrcIP, tcp.SrcPort, ipv4.DstIP, int(tcp.DstPort))
-
-				tcpAddr := &net.TCPAddr{
-					IP: f.router.sourceIp,
+			if t.state != stateListen {
+				if t.lastAckSent != tcp.Seq {
+					// we're not in a place to receive this packet. drop it.
+					t.FlowHandler.router.log.Printf("out of order packet received %#v", tcp)
+					break
 				}
-
-				dst := fmt.Sprintf("%s:%d", ipv4.DstIP, int(tcp.DstPort))
-
-				dialer := net.Dialer{LocalAddr: tcpAddr}
-				f.conn, err = dialer.Dial("tcp4", dst)
-
-				if err != nil {
-					f.router.log.Printf("upstream connection failed: %s", err)
-					f.conn = nil
-					return
-				}
-				// save the ports used in this flow
-				tunSrcPort = int(tcp.SrcPort)
-
-				// start a read routine for this connection
-				go readNetData2(f.conn, netRCh)
-
-				// finish dialing and start handshake clientside
-				f.Dialing(false)
-				f.Handshake(true)
-				finishTcp4Handshake(f, tunData)
-				goto START
+			}
+			if t.next_seq(tcp) > t.lastAckSent {
+				t.lastAckSent = t.next_seq(tcp)
 			}
 
-			// start a read routine for this connection
-			go readNetData2(f.conn, netRCh)
+			recvFlags := flagsFromTcpLayer(tcp)
 
+			// received data packet
 			if len(tcp.Payload) > 0 {
-				// write the buffer into the conn
-				if _, err := f.conn.Write(tcp.Payload); err != nil {
-					f.router.log.Printf("WriteTo err, %s", err)
-					return
+				t.recvBuffer = append(t.recvBuffer, tcp.Payload...)
+				if _, ok := recvFlags[flagPSH]; ok {
+					// received push flag, should forward and flush buffer now
+					t.flushRecvBuffer()
 				}
-			}
-		case netData := <-netRCh: // data came in from network to this flow
-			timeout()
-
-			// create the forwarding reply
-			ipLayer := layers.IPv4{
-				Version: 4,
-				TTL:     64,
-				//TOS:        ipv4.TOS,
-				//Id:         ipv4.Id,
-				SrcIP:    tunDstIP,
-				DstIP:    tunSrcIP,
-				Protocol: layers.IPProtocolTCP,
-				//Flags:      ipv4.Flags,
-				//FragOffset: ipv4.FragOffset,
-				//Options:    ipv4.Options,
+				t._send_ack([]tcpFlag{}, nil)
+				break
 			}
 
-			// build the forwarding layer
-			tcpLayer := layers.TCP{
-				SrcPort: layers.TCPPort(80),
-				DstPort: layers.TCPPort(tunSrcPort),
-				Seq:     f.mySeq,
-				Ack:     f.tunSeq,
-				ACK:     true,
-				PSH:     true,
-				Window:  0x1000,
+			if _, ok := recvFlags[flagRST]; ok {
+				t.FlowHandler.router.log.Print("received RST, closing")
+				t._close()
+				break
 			}
 
-			tcpLayer.SetNetworkLayerForChecksum(&ipLayer)
-
-			// serialize reply into bytes
-			err = gopacket.SerializeLayers(f.buf, f.opts, &ipLayer, &tcpLayer, gopacket.Payload(netData.payload))
-			if err != nil {
-				f.router.log.Printf("error serializing TCP packet: %s", err)
-				return
+			if _, ok := recvFlags[flagSYN]; ok {
+				if t.state == stateListen {
+					t.state = stateSynReceived
+					err := t.dialUpstream()
+					if err != nil {
+						t.FlowHandler.router.log.Printf("upstream connection failed: %s", err)
+						t._close()
+						break
+					}
+					go readNetData2(t.conn, netRCh)
+					t._send_ack([]tcpFlag{flagSYN}, nil)
+					break
+				}
+				if t.state == stateSynSent {
+					t.sequence += 1
+					t.state = stateEstablished
+					break
+				}
+				t._send_ack([]tcpFlag{}, nil)
+				break
 			}
 
-			f.mySeq += uint32(len(netData.payload))
+			if _, ok := recvFlags[flagFIN]; ok {
+				if t.state == stateEstablished {
+					t.sequence += 1
+					t.state = stateLastAck
+					t._send_ack([]tcpFlag{flagFIN}, nil)
+					break
+				}
+				if t.state == stateFinWait1 {
+					t.sequence += 1
+					t._send_ack([]tcpFlag{}, nil)
+					t._close()
+					break
+				}
+				t.FlowHandler.router.log.Printf("received FIN when not in Established or FINWait1 state. State: %#v", t.state)
+			}
 
-			// send bytes to tun interface
-			f.tunWch <- f.buf.Bytes()
-			tunSeq += 1
+			if _, ok := recvFlags[flagACK]; ok {
+				if t.state == stateSynReceived {
+					t.state = stateEstablished
+					break
+				}
+				if t.state == stateLastAck {
+					t._close()
+					break
+				}
+				if tcp.Ack == t.sequence {
+					t.FlowHandler.router.log.Printf("received ACK for sent packet. State: %#v", t.state)
+					break
+				}
+				t.FlowHandler.router.log.Printf("received ACK when not in SynReceived or LastAck state. State: %#v", t.state)
+			}
 
+			//we should never get here
+			t.FlowHandler.router.log.Printf("received bad tcp packet %#v", tcp)
+		case netData := <-netRCh:
 			if netData.err != nil {
-				f.router.log.Printf("get error from netData: %s", netData.err)
+				t.FlowHandler.router.log.Printf("error receive data from net %#v", netData.err)
+				t.close()
 			}
+			t.lock.Lock()
+			t.sendBuffer = append(t.sendBuffer, netData.payload...)
+			t.lock.Unlock()
+		case <-ticker.C:
+			t.sendSendBuffer(sendTicker)
+		case <-sendTicker:
+			t.sendSendBuffer(sendTicker)
 		}
 	}
 }
 
+// startTCP4FlowHandler is a FlowHandler for handling transit tcp traffic
+func startTCP4FlowHandler(f *FlowHandler) {
+	defer f.Close()
+	t := newTCP4FlowHandler(f)
+	t.state = stateListen
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		t.loop()
+		wg.Done()
+	}()
+	wg.Wait()
+}
+
+/*
 func finishTcp4Handshake(f *FlowHandler, tunData gopacket.Packet) {
 	// unravel the tunData
 	ipv4 := tunData.NetworkLayer().(*layers.IPv4)
@@ -262,23 +531,6 @@ func finishTcp4Handshake(f *FlowHandler, tunData gopacket.Packet) {
 			SYN:     true,
 			Window:  0x7210,
 			Options: tcp.Options,
-			/* []layers.TCPOption{
-				layers.TCPOption{
-					OptionType:   layers.TCPOptionKindMSS,
-					OptionLength: 2,
-					OptionData:   []byte{0x05, 0xb4}, // default of 1460
-				},
-				layers.TCPOption{
-					OptionType:   layers.TCPOptionKindWindowScale,
-					OptionLength: 1,
-					OptionData:   []byte{0x02}, // 4 (multiplied by2)
-				},
-				layers.TCPOption{
-					OptionType:   layers.TCPOptionKindSACKPermitted,
-					OptionLength: 1,
-					OptionData:   []byte{0x01}, // yes
-				},
-			},*/
 		}
 
 		tcpLayer.SetNetworkLayerForChecksum(&ipLayer)
@@ -300,3 +552,4 @@ func finishTcp4Handshake(f *FlowHandler, tunData gopacket.Packet) {
 		f.tunSeq = tcp.Seq
 	}
 }
+*/
