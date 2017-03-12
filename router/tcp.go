@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"net"
-	"strconv"
 	"time"
 
 	"github.com/google/gopacket"
@@ -109,14 +108,13 @@ func tcp4FlowHandler(f *FlowHandler) {
 	var err error
 
 	// channels to use for the readRoutine
-	netRCh := make(chan []byte)
-	netECh := make(chan error)
+	netRCh := make(chan l3Payload)
 
 	// globally save the original tunnel source and destination ip's for further use
 	var tunSrcIP net.IP
 	var tunDstIP net.IP
 	var tunSrcPort int
-	var netSrcPort int
+	var tunSeq uint32
 
 	// shorthand to reset the timeout
 	timeout := func() { f.ResetTimeOut(30 * time.Second) }
@@ -140,22 +138,25 @@ func tcp4FlowHandler(f *FlowHandler) {
 			ipv4 := tunData.NetworkLayer().(*layers.IPv4)
 			tcp := tunData.Layers()[1].(*layers.TCP)
 
+			f.tunSeq = tcp.Seq
+
 			// open the remote connection if it was not open yet
 			if f.conn == nil {
 				f.Dialing(true)
 				tunSrcIP = ipv4.SrcIP
 				tunDstIP = ipv4.DstIP
 
-				f.conn, err = net.DialTCP("tcp4",
-					&net.TCPAddr{
-						IP:   f.router.sourceIp,
-						Port: 0,
-					},
-					&net.TCPAddr{
-						IP:   tunDstIP,
-						Port: int(tcp.DstPort),
-					},
-				)
+				f.router.log.Printf("tcp flow [%s] created; src %s:%s, dst %s:%d", f.flowHash, ipv4.SrcIP, tcp.SrcPort, ipv4.DstIP, int(tcp.DstPort))
+
+				tcpAddr := &net.TCPAddr{
+					IP: f.router.sourceIp,
+				}
+
+				dst := fmt.Sprintf("%s:%d", ipv4.DstIP, int(tcp.DstPort))
+
+				dialer := net.Dialer{LocalAddr: tcpAddr}
+				f.conn, err = dialer.Dial("tcp4", dst)
+
 				if err != nil {
 					f.router.log.Printf("upstream connection failed: %s", err)
 					f.conn = nil
@@ -163,11 +164,9 @@ func tcp4FlowHandler(f *FlowHandler) {
 				}
 				// save the ports used in this flow
 				tunSrcPort = int(tcp.SrcPort)
-				_, port, _ := net.SplitHostPort(f.conn.LocalAddr().String())
-				netSrcPort, _ = strconv.Atoi(port)
 
 				// start a read routine for this connection
-				go readNetData(f.conn, netRCh, netECh)
+				go readNetData2(f.conn, netRCh)
 
 				// finish dialing and start handshake clientside
 				f.Dialing(false)
@@ -177,110 +176,46 @@ func tcp4FlowHandler(f *FlowHandler) {
 			}
 
 			// start a read routine for this connection
-			go readNetData(f.conn, netRCh, netECh)
-
-			// create the forwarding reply
-			ipLayer := layers.IPv4{
-				Version:    4,
-				TTL:        ipv4.TTL - 1,
-				TOS:        ipv4.TOS,
-				Id:         ipv4.Id,
-				SrcIP:      f.router.sourceIp,
-				DstIP:      ipv4.DstIP,
-				Protocol:   layers.IPProtocolTCP,
-				Flags:      ipv4.Flags,
-				FragOffset: ipv4.FragOffset,
-				Options:    ipv4.Options,
-			}
-
-			// build the forwarding layer
-			tcpLayer := layers.TCP{
-				SrcPort:    layers.TCPPort(netSrcPort),
-				DstPort:    tcp.DstPort,
-				Seq:        tcp.Seq,
-				Ack:        tcp.Ack,
-				DataOffset: tcp.DataOffset,
-				Window:     tcp.Window,
-				Urgent:     tcp.Urgent,
-				Options:    tcp.Options,
-				FIN:        tcp.FIN,
-				SYN:        tcp.SYN,
-				RST:        tcp.RST,
-				PSH:        tcp.PSH,
-				ACK:        tcp.ACK,
-				URG:        tcp.URG,
-				ECE:        tcp.ECE,
-				CWR:        tcp.CWR,
-				NS:         tcp.NS,
-			}
-
-			tcpLayer.SetNetworkLayerForChecksum(&ipLayer)
-
-			// serialize the layer into a buffer
-			err := gopacket.SerializeLayers(f.buf, f.opts, &tcpLayer, gopacket.Payload(tcp.BaseLayer.Payload))
-			if err != nil {
-				f.router.log.Printf("error serializing ICMPv4 packet: %s", err)
-				return
-			}
+			go readNetData2(f.conn, netRCh)
 
 			// write the buffer into the conn
-			if _, err := f.conn.Write(f.buf.Bytes()); err != nil {
+			if _, err := f.conn.Write(tcp.Payload); err != nil {
 				f.router.log.Printf("WriteTo err, %s", err)
 				return
 			}
 		case netData := <-netRCh: // data came in from network to this flow
 			timeout()
-
-			// unmarshal data from the network into a packet
-			packet := gopacket.NewPacket(netData, layers.LayerTypeIPv4, gopacket.Default)
-			if err := packet.ErrorLayer(); err != nil {
-				f.router.log.Printf("Error decoding some part of the net packet: %s", err)
-				return
-			}
-
-			// unravel the layers
-			ipv4 := packet.Layers()[0].(*layers.IPv4)
-			tcp := packet.Layers()[1].(*layers.TCP)
+			f.mySeq += 1
 
 			// create the forwarding reply
 			ipLayer := layers.IPv4{
-				Version:    4,
-				TTL:        ipv4.TTL - 1,
-				TOS:        ipv4.TOS,
-				Id:         ipv4.Id,
-				SrcIP:      tunDstIP,
-				DstIP:      tunSrcIP,
-				Protocol:   layers.IPProtocolTCP,
-				Flags:      ipv4.Flags,
-				FragOffset: ipv4.FragOffset,
-				Options:    ipv4.Options,
+				Version: 4,
+				TTL:     1,
+				//TOS:        ipv4.TOS,
+				//Id:         ipv4.Id,
+				SrcIP:    tunDstIP,
+				DstIP:    tunSrcIP,
+				Protocol: layers.IPProtocolTCP,
+				//Flags:      ipv4.Flags,
+				//FragOffset: ipv4.FragOffset,
+				//Options:    ipv4.Options,
 			}
 
 			// build the forwarding layer
 			tcpLayer := layers.TCP{
-				SrcPort:    tcp.SrcPort,
-				DstPort:    layers.TCPPort(tunSrcPort),
-				Seq:        tcp.Seq,
-				Ack:        tcp.Ack,
-				DataOffset: tcp.DataOffset,
-				Window:     tcp.Window,
-				Urgent:     tcp.Urgent,
-				Options:    tcp.Options,
-				FIN:        tcp.FIN,
-				SYN:        tcp.SYN,
-				RST:        tcp.RST,
-				PSH:        tcp.PSH,
-				ACK:        tcp.ACK,
-				URG:        tcp.URG,
-				ECE:        tcp.ECE,
-				CWR:        tcp.CWR,
-				NS:         tcp.NS,
+				SrcPort: layers.TCPPort(80),
+				DstPort: layers.TCPPort(tunSrcPort),
+				Seq:     f.mySeq,
+				Ack:     f.tunSeq,
+				ACK:     true,
+				PSH:     true,
+				Window:  0x1000,
 			}
 
 			tcpLayer.SetNetworkLayerForChecksum(&ipLayer)
 
 			// serialize reply into bytes
-			err = gopacket.SerializeLayers(f.buf, f.opts, &ipLayer, &tcpLayer, gopacket.Payload(tcp.BaseLayer.Payload))
+			err = gopacket.SerializeLayers(f.buf, f.opts, &ipLayer, &tcpLayer, gopacket.Payload(netData.payload))
 			if err != nil {
 				f.router.log.Printf("error serializing TCP packet: %s", err)
 				return
@@ -288,9 +223,11 @@ func tcp4FlowHandler(f *FlowHandler) {
 
 			// send bytes to tun interface
 			f.tunWch <- f.buf.Bytes()
-		case err = <-netECh: // error came in from network to this flow
-			f.router.log.Printf("tcp net read error: %s", err)
-			return
+			tunSeq += 1
+
+			if netData.err != nil {
+				f.router.log.Printf("get error from netData: %s", netData.err)
+			}
 		}
 	}
 }
@@ -316,8 +253,8 @@ func finishTcp4Handshake(f *FlowHandler, tunData gopacket.Packet) {
 		tcpLayer := layers.TCP{
 			SrcPort: tcp.DstPort,
 			DstPort: tcp.SrcPort,
-			Seq:     tcp.Seq,
-			Ack:     tcp.Seq + 1,
+			Seq:     f.mySeq,
+			Ack:     f.tunSeq + 1,
 			ACK:     true,
 			SYN:     true,
 			Window:  0x7210,

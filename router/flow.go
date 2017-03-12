@@ -87,8 +87,11 @@ type FlowHandler struct {
 
 	router *router
 
+	// needed for TCP connections
 	dialing     bool // set to true while dialing out
 	handShaking bool // set to true during hand with client
+	tunSeq      uint32
+	mySeq       uint32
 }
 
 // ResetTimeOut will reset the timeout for this flow
@@ -135,5 +138,26 @@ func readNetData(conn net.Conn, netRCh chan []byte, netECh chan error) {
 		}
 		// put the read data in the channel
 		netRCh <- data[:n]
+	}
+}
+
+// readNetData will read data from conn and put it on channel netRCh
+// on error the error is forwarded to channel netECh
+func readNetData2(conn net.Conn, netRCh chan l3Payload) {
+	data := make([]byte, 4096)
+	for {
+		payload := l3Payload{}
+		n, err := conn.Read(data)
+		if err != nil {
+			if n > 0 { // always write remaining bytes
+				payload.payload = data[:n]
+			}
+			payload.err = err
+			netRCh <- payload
+			break
+		}
+		payload.payload = data[:n]
+		// put the read data in the channel
+		netRCh <- payload
 	}
 }
