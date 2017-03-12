@@ -24,11 +24,6 @@ func (r *router) HandleTCP4(packet gopacket.Packet, wCh chan []byte) {
 		return
 	}
 
-	if !r.isPrivileged {
-		r.log.Print("tcp received, but disabled; running unpriviledged")
-		return
-	}
-
 	flowHash := hashOf(ipv4.NetworkFlow().FastHash(), packet.TransportLayer().TransportFlow().Dst().Raw(), packet.TransportLayer().TransportFlow().Src().Raw())
 
 	var flowHandler *FlowHandler
@@ -346,7 +341,7 @@ func (t *tcp4FlowHandler) send(data []byte) {
 		if t.state == stateEstablished {
 			break
 		}
-		time.Sleep(1 * time.Nanosecond)
+		time.Sleep(10 * time.Nanosecond)
 	}
 	t._send_ack([]tcpFlag{flagPSH}, data)
 }
@@ -479,7 +474,8 @@ func (t *tcp4FlowHandler) loop() {
 				t.close()
 			}
 			t.lock.Lock()
-			t.sendBuffer = append(t.sendBuffer, netData.payload...)
+			//t.sendBuffer = append(t.sendBuffer, netData.payload...)
+			t.send(netData.payload)
 			t.lock.Unlock()
 		case <-ticker.C:
 			t.sendSendBuffer(sendTicker)

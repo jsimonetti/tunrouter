@@ -2,6 +2,7 @@ package router
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"time"
 
@@ -20,10 +21,10 @@ func (r *router) HandleUDP4(packet gopacket.Packet, wCh chan []byte) {
 		return
 	}
 
-	if !r.isPrivileged {
-		r.log.Print("udp received, but disabled; running unpriviledged")
-		return
-	}
+	//	if !r.isPrivileged {
+	//		r.log.Print("udp received, but disabled; running unpriviledged")
+	//		return
+	//	}
 
 	flowHash := hashOf(ipv4.NetworkFlow().FastHash(), packet.TransportLayer().TransportFlow().Dst().Raw(), packet.TransportLayer().TransportFlow().Src().Raw())
 
@@ -92,7 +93,18 @@ func udp4FlowHandler(f *FlowHandler) {
 				tunSrcIP = ipv4.SrcIP
 				tunDstIP = ipv4.DstIP
 
-				f.conn, err = net.DialIP("ip:udp", &net.IPAddr{IP: f.router.sourceIp}, &net.IPAddr{IP: tunDstIP})
+				dst := fmt.Sprintf("%s:%d", tunDstIP, int(udp.DstPort))
+
+				udpAddr := &net.UDPAddr{
+					IP: f.router.sourceIp,
+				}
+
+				dialer := net.Dialer{
+					Timeout:   1 * time.Second,
+					LocalAddr: udpAddr,
+				}
+
+				f.conn, err = dialer.Dial("udp4", dst)
 				if err != nil {
 					f.router.log.Printf("dial err, %s", err)
 					return
