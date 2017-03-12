@@ -138,7 +138,7 @@ func tcp4FlowHandler(f *FlowHandler) {
 			ipv4 := tunData.NetworkLayer().(*layers.IPv4)
 			tcp := tunData.Layers()[1].(*layers.TCP)
 
-			f.tunSeq = tcp.Seq
+			f.tunSeq += uint32(len(tcp.Payload))
 
 			// open the remote connection if it was not open yet
 			if f.conn == nil {
@@ -178,19 +178,20 @@ func tcp4FlowHandler(f *FlowHandler) {
 			// start a read routine for this connection
 			go readNetData2(f.conn, netRCh)
 
-			// write the buffer into the conn
-			if _, err := f.conn.Write(tcp.Payload); err != nil {
-				f.router.log.Printf("WriteTo err, %s", err)
-				return
+			if len(tcp.Payload) > 0 {
+				// write the buffer into the conn
+				if _, err := f.conn.Write(tcp.Payload); err != nil {
+					f.router.log.Printf("WriteTo err, %s", err)
+					return
+				}
 			}
 		case netData := <-netRCh: // data came in from network to this flow
 			timeout()
-			f.mySeq += 1
 
 			// create the forwarding reply
 			ipLayer := layers.IPv4{
 				Version: 4,
-				TTL:     1,
+				TTL:     64,
 				//TOS:        ipv4.TOS,
 				//Id:         ipv4.Id,
 				SrcIP:    tunDstIP,
@@ -220,6 +221,8 @@ func tcp4FlowHandler(f *FlowHandler) {
 				f.router.log.Printf("error serializing TCP packet: %s", err)
 				return
 			}
+
+			f.mySeq += uint32(len(netData.payload))
 
 			// send bytes to tun interface
 			f.tunWch <- f.buf.Bytes()
@@ -253,8 +256,8 @@ func finishTcp4Handshake(f *FlowHandler, tunData gopacket.Packet) {
 		tcpLayer := layers.TCP{
 			SrcPort: tcp.DstPort,
 			DstPort: tcp.SrcPort,
-			Seq:     f.mySeq,
-			Ack:     f.tunSeq + 1,
+			Seq:     tcp.Seq,
+			Ack:     tcp.Seq + 1,
 			ACK:     true,
 			SYN:     true,
 			Window:  0x7210,
@@ -290,8 +293,10 @@ func finishTcp4Handshake(f *FlowHandler, tunData gopacket.Packet) {
 		return
 	}
 
-	//	if !tcp.SYN && tcp.ACK {
-	f.router.log.Printf("finished handshake with client %s:%s", ipv4.SrcIP, tcp.SrcPort)
-	f.handShaking = false
-	//	}
+	if !tcp.SYN && tcp.ACK {
+		f.router.log.Printf("finished handshake with client %s:%s", ipv4.SrcIP, tcp.SrcPort)
+		f.handShaking = false
+		f.mySeq = tcp.Seq
+		f.tunSeq = tcp.Seq
+	}
 }
