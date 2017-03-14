@@ -272,7 +272,7 @@ func (t *tcp4FlowHandler) buildPacket() (layers.IPv4, layers.TCP) {
 			},
 		},
 	}
-	ipLayer.SrcIP = net.ParseIP("192.168.1.11")
+
 	tcpLayer.SetNetworkLayerForChecksum(&ipLayer)
 	return ipLayer, tcpLayer
 }
@@ -382,6 +382,10 @@ func (t *tcp4FlowHandler) Send(data []byte) {
 
 // tcpFSM is the TCP finite state machine
 func (t *tcp4FlowHandler) tcpFSM(tcp *layers.TCP) tcpState {
+	if tcp.RST {
+		t.Close()
+	}
+
 	if t.state != stateListen {
 		if t.lastAckSent != tcp.Seq {
 			// we're not in a place to receive this packet. drop it.
@@ -399,7 +403,7 @@ func (t *tcp4FlowHandler) tcpFSM(tcp *layers.TCP) tcpState {
 		if tcp.SYN {
 			// received initial SYN, send SYN,ACK
 			t.state = stateSynReceived
-			t.sendACK([]tcpFlag{flagSYN}, nil)
+			//t.sendACK([]tcpFlag{flagSYN}, nil) // delay this untill the upstream connection is finished
 			return t.state
 		}
 
@@ -432,7 +436,8 @@ func (t *tcp4FlowHandler) tcpFSM(tcp *layers.TCP) tcpState {
 			// close application and wait for application close
 			//
 			// confirm application close by sending FIN
-			t.sendFIN([]tcpFlag{flagFIN}, nil)
+			t.state = stateLastAck
+			t.sendFIN([]tcpFlag{}, nil)
 			return t.state
 		}
 
@@ -457,6 +462,12 @@ func (t *tcp4FlowHandler) tcpFSM(tcp *layers.TCP) tcpState {
 		}
 
 	case stateClosing: // simultaneous close
+		if tcp.ACK {
+			t.state = stateClosed // we skip time-stateFinWait1
+			return t.state
+		}
+
+	case stateLastAck:
 		if tcp.ACK {
 			t.state = stateClosed // we skip time-stateFinWait1
 			return t.state
@@ -501,7 +512,7 @@ func (t *tcp4FlowHandler) Start() {
 				break
 			}
 			t.srcIp = ipv4.SrcIP
-			//t.dstIp = ipv4.DstIP
+			t.dstIp = ipv4.DstIP
 			t.srcPort = uint16(tcp.SrcPort)
 			t.dstPort = uint16(tcp.DstPort)
 
@@ -517,6 +528,7 @@ func (t *tcp4FlowHandler) Start() {
 					//break
 				}
 				go readNetData2(t.conn, netRCh)
+				t.sendACK([]tcpFlag{flagSYN}, nil) // send this here since we don't in the FSM
 				break
 			}
 
@@ -527,10 +539,10 @@ func (t *tcp4FlowHandler) Start() {
 			}
 
 			// received data packet
-			if len(tcp.Payload) > 0 {
-				//t.Flow.router.log.Printf("received payload in state: %s, %s", t.state.String(), spew.Sdump(tcp.Payload))
+			if len(tcp.BaseLayer.Payload) > 0 {
+				//t.Flow.router.log.Printf("received payload in state: %s, %s", t.state.String(), spew.Sdump(tcp.BaseLayer.Payload))
 
-				t.recvBuffer = append(t.recvBuffer, tcp.Payload...)
+				t.recvBuffer = append(t.recvBuffer, tcp.BaseLayer.Payload...)
 				if tcp.PSH {
 					// received push flag, should forward and flush buffer now
 					t.flushRecvBuffer()
