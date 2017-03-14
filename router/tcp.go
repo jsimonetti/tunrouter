@@ -98,6 +98,7 @@ func tcp4Rst(ipv4 *layers.IPv4, tcp *layers.TCP) (ipLayer layers.IPv4, tcpLayer 
 	return
 }
 
+//go:generate stringer -type=tcpFlag
 type tcpFlag uint8
 
 const (
@@ -113,6 +114,7 @@ const (
 	flagNS
 )
 
+//go:generate stringer -type=tcpState
 type tcpState uint8
 
 const (
@@ -395,6 +397,8 @@ func (t *tcp4FlowHandler) Start() {
 
 			// received data packet
 			if len(tcp.Payload) > 0 {
+				t.Flow.router.log.Printf("received payload in state: %#v", t.state)
+
 				t.recvBuffer = append(t.recvBuffer, tcp.Payload...)
 				if _, ok := recvFlags[flagPSH]; ok {
 					// received push flag, should forward and flush buffer now
@@ -405,12 +409,15 @@ func (t *tcp4FlowHandler) Start() {
 			}
 
 			if _, ok := recvFlags[flagRST]; ok {
+				t.Flow.router.log.Printf("received RST in state: %#v", t.state)
 				t.Flow.router.log.Print("received RST, closing")
 				t.close()
 				break
 			}
 
 			if _, ok := recvFlags[flagSYN]; ok {
+				t.Flow.router.log.Printf("received SYN in state: %#v", t.state)
+
 				if t.state == stateListen {
 					t.state = stateSynReceived
 					err := t.dialUpstream()
@@ -433,6 +440,7 @@ func (t *tcp4FlowHandler) Start() {
 			}
 
 			if _, ok := recvFlags[flagFIN]; ok {
+				t.Flow.router.log.Printf("received FIN in state: %#v", t.state)
 				if t.state == stateEstablished {
 					t.sequence += 1
 					t.state = stateLastAck
@@ -445,10 +453,10 @@ func (t *tcp4FlowHandler) Start() {
 					t.close()
 					break
 				}
-				t.Flow.router.log.Printf("received FIN when not in Established or FINWait1 state. State: %#v", t.state)
 			}
 
 			if _, ok := recvFlags[flagACK]; ok {
+				t.Flow.router.log.Printf("received ACK in state: %#v", t.state)
 				if t.state == stateSynReceived {
 					t.state = stateEstablished
 					break
