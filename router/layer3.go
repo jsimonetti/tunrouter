@@ -31,8 +31,7 @@ func (rwc *l3ReadWriteCloser) Read(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		return
 	}
-	//	rwc.lock.RLock()
-	//	defer rwc.lock.RUnlock()
+
 	if rwc.isClosed {
 		return 0, fmt.Errorf("allready closed")
 	}
@@ -57,8 +56,6 @@ func (rwc *l3ReadWriteCloser) Read(p []byte) (n int, err error) {
 
 // Write will read from the andpoint and send to the router
 func (rwc *l3ReadWriteCloser) Write(p []byte) (n int, err error) {
-	//	rwc.lock.RLock()
-	//	defer rwc.lock.RUnlock()
 	if rwc.isClosed {
 		err = fmt.Errorf("connection is closed")
 		return
@@ -77,8 +74,6 @@ func (rwc *l3ReadWriteCloser) Write(p []byte) (n int, err error) {
 
 // Close will close the connection or return an error if it was allready closed
 func (rwc *l3ReadWriteCloser) Close() error {
-	//	rwc.lock.Lock()
-	//	defer rwc.lock.Unlock()
 	if !rwc.isClosed {
 		rwc.isClosed = true
 		close(rwc.out)
