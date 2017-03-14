@@ -36,5 +36,5 @@ func (r *router) HandleIPv4(buff []byte, wCh chan []byte) {
 	}
 
 	// fire and forget the handler
-	go handler(packet, wCh)
+	handler(packet, wCh)
 }

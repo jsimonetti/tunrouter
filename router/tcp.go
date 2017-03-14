@@ -513,7 +513,8 @@ func (t *tcp4FlowHandler) Start() {
 					t.Flow.router.log.Printf("upstream connection failed: %s", err)
 					t.sendRST()
 					t.Close()
-					break
+					return
+					//break
 				}
 				go readNetData2(t.conn, netRCh)
 				break
@@ -565,14 +566,14 @@ func startTCP4FlowHandler(f *Flow) {
 	t := newTCP4FlowHandler(f)
 	t.state = stateListen
 	rnd := rand.NewSource(time.Now().UnixNano())
-	//t.sequence = uint32(rnd.Int63())
+	t.sequence = uint32(rnd.Int63())
 	t.id = uint16(rnd.Int63())
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		t.Start()
-		wg.Done()
-	}()
-	wg.Wait()
+	//	var wg sync.WaitGroup
+	//	wg.Add(1)
+	//	go func() {
+	t.Start()
+	//		wg.Done()
+	//	}()
+	//	wg.Wait()
 }
