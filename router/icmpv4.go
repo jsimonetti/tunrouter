@@ -30,7 +30,7 @@ func (r *router) HandleICMPv4(packet gopacket.Packet, wCh chan []byte) {
 	flowHash := hashOf(ipv4.NetworkFlow().FastHash(), []byte{icmp.TypeCode.Type()}, []byte{icmp.TypeCode.Code()})
 
 	var err error
-	var flowHandler *FlowHandler
+	var flowHandler *Flow
 
 	// check if an existing flowHandler is allread in the flowTable.
 	if flowHandler, err = r.flowTable.Get(flowHash); err != nil {
@@ -103,7 +103,7 @@ func (r *router) icmpSelfHandler(packet gopacket.Packet, wCh chan []byte) {
 }
 
 // icmpFlowHandler is a FlowHandler for handling transit icmp traffic
-func icmpFlowHandler(f *FlowHandler) {
+func icmpFlowHandler(f *Flow) {
 	defer f.Close()
 	var err error
 
@@ -121,7 +121,7 @@ func icmpFlowHandler(f *FlowHandler) {
 	for {
 		select {
 		case <-f.timeout: // a timeout happend
-			f.router.log.Printf("icmp flow [%s] timed out; src %#v(%s), dst %#v(%s)", f.flowHash, tunSrcIP, tunSrcIP, tunDstIP, tunDstIP)
+			f.router.log.Printf("icmp flow [%s] timed out; src %#v(%s), dst %#v(%s)", f.hash, tunSrcIP, tunSrcIP, tunDstIP, tunDstIP)
 			return
 		case tunData := <-f.tunRCh: // data came in from TUN to this flow
 			timeout()

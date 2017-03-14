@@ -25,12 +25,12 @@ func hashOf(ipv4Flow uint64, src []byte, dst []byte) string {
 // the hash if of type flow.FastHash()
 type FlowTable struct {
 	lock    sync.Mutex
-	flowMap map[string]*FlowHandler
+	flowMap map[string]*Flow
 }
 
 // Get attempts to return the FlowHandler for a flowHash
 // If none can be found errNoSuchFlow is returned
-func (f *FlowTable) Get(flowHash string) (*FlowHandler, error) {
+func (f *FlowTable) Get(flowHash string) (*Flow, error) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	if handler, ok := f.flowMap[flowHash]; ok {
@@ -40,14 +40,14 @@ func (f *FlowTable) Get(flowHash string) (*FlowHandler, error) {
 }
 
 // New allocates a new FlowHandler and add it to the FlowTable for the given flowHash
-func (f *FlowTable) New(flowHash string) *FlowHandler {
+func (f *FlowTable) New(flowHash string) *Flow {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 
 	//create new FlowHandler and set some values
-	handler := &FlowHandler{
-		flowHash: flowHash,
-		buf:      gopacket.NewSerializeBuffer(),
+	handler := &Flow{
+		hash: flowHash,
+		buf:  gopacket.NewSerializeBuffer(),
 		opts: gopacket.SerializeOptions{
 			FixLengths:       true,
 			ComputeChecksums: true,
@@ -71,9 +71,9 @@ func (f *FlowTable) Delete(flowHash string) {
 	f.lock.Unlock()
 }
 
-// FlowHandler is a structure for a single handler of a flowHash
-type FlowHandler struct {
-	flowHash string // save my hash
+// Flow is a structure for a single handler of a flowHash
+type Flow struct {
+	hash string // save my hash
 
 	tunRCh chan gopacket.Packet // channel this handler will accept data on from the tunnel
 	tunWch chan []byte          // channel this handler will send data to the tunnel
@@ -96,14 +96,14 @@ type FlowHandler struct {
 
 // ResetTimeOut will reset the timeout for this flow
 // It is called inside the handler everytime the timeout needs to be extended
-func (f *FlowHandler) ResetTimeOut(extend time.Duration) {
+func (f *Flow) ResetTimeOut(extend time.Duration) {
 	timer := time.NewTimer(extend)
 	f.timeout = timer.C
 }
 
 // Close will remove the FlowHandler from the FlowTable and close any open connections handled by it
-func (f *FlowHandler) Close() {
-	f.router.flowTable.Delete(f.flowHash)
+func (f *Flow) Close() {
+	f.router.flowTable.Delete(f.hash)
 	close(f.tunRCh)
 	if f.conn != nil {
 		f.conn.Close()

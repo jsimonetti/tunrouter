@@ -30,7 +30,7 @@ func New(config Config) Router {
 		selfIPv4: config.SelfIPv4,
 		sourceIp: config.NATSourceIp,
 		flowTable: FlowTable{
-			flowMap: make(map[string]*FlowHandler),
+			flowMap: make(map[string]*Flow),
 		},
 		isPrivileged: runningPrivileged(),
 	}

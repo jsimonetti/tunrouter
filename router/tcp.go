@@ -25,7 +25,7 @@ func (r *router) HandleTCP4(packet gopacket.Packet, wCh chan []byte) {
 
 	flowHash := hashOf(ipv4.NetworkFlow().FastHash(), packet.TransportLayer().TransportFlow().Dst().Raw(), packet.TransportLayer().TransportFlow().Src().Raw())
 
-	var flowHandler *FlowHandler
+	var flowHandler *Flow
 
 	// check if an existing flowHandler is allread in the flowTable.
 	if flowHandler, err = r.flowTable.Get(flowHash); err != nil {
@@ -159,16 +159,16 @@ func flagsFromTcpLayer(tcp *layers.TCP) tcpFlags {
 
 type tcpFlags map[tcpFlag]bool
 
-func newTCP4FlowHandler(f *FlowHandler) *tcp4FlowHandler {
+func newTCP4FlowHandler(f *Flow) *tcp4FlowHandler {
 	return &tcp4FlowHandler{
-		FlowHandler: f,
-		state:       stateClosed,
-		sequence:    0,
+		Flow:     f,
+		state:    stateClosed,
+		sequence: 0,
 	}
 }
 
 type tcp4FlowHandler struct {
-	*FlowHandler
+	*Flow
 
 	srcIp   net.IP
 	dstIp   net.IP
@@ -214,7 +214,7 @@ func (t *tcp4FlowHandler) flushRecvBuffer() {
 	_, err := t.conn.Write(t.recvBuffer)
 	t.recvBuffer = []byte{}
 	if err != nil {
-		t.FlowHandler.router.log.Printf("error flushing recvBuffer: %s", err)
+		t.Flow.router.log.Printf("error flushing recvBuffer: %s", err)
 		t.Close()
 	}
 }
@@ -223,7 +223,7 @@ func (t *tcp4FlowHandler) dialUpstream() (err error) {
 	dst := fmt.Sprintf("%s:%d", t.dstIp, int(t.dstPort))
 
 	tcpAddr := &net.TCPAddr{
-		IP: t.FlowHandler.router.sourceIp,
+		IP: t.Flow.router.sourceIp,
 	}
 
 	dialer := net.Dialer{
@@ -286,13 +286,13 @@ func (t *tcp4FlowHandler) send(flags []tcpFlag, payload gopacket.Payload) {
 	}
 
 	// serialize reply into bytes
-	err := gopacket.SerializeLayers(t.FlowHandler.buf, t.FlowHandler.opts, &ipLayer, &tcpLayer, payload)
+	err := gopacket.SerializeLayers(t.Flow.buf, t.Flow.opts, &ipLayer, &tcpLayer, payload)
 	if err != nil {
-		t.FlowHandler.router.log.Printf("error serializing TCP packet for _send: %s", err)
+		t.Flow.router.log.Printf("error serializing TCP packet for _send: %s", err)
 		return
 	}
 
-	t.FlowHandler.tunWch <- t.FlowHandler.buf.Bytes()
+	t.Flow.tunWch <- t.Flow.buf.Bytes()
 
 	if len(payload) > 0 {
 		t.sequence += uint32(len(payload))
@@ -332,7 +332,7 @@ func (t *tcp4FlowHandler) nextSequence(tcp *layers.TCP) uint32 {
 
 func (t *tcp4FlowHandler) close() {
 	t.state = stateClosed
-	t.FlowHandler.Close()
+	t.Flow.Close()
 }
 
 func (t *tcp4FlowHandler) Send(data []byte) {
@@ -347,18 +347,18 @@ func (t *tcp4FlowHandler) Send(data []byte) {
 
 func (t *tcp4FlowHandler) Start() {
 	// shorthand to reset the timeout
-	timeout := func() { t.FlowHandler.ResetTimeOut(30 * time.Second) }
+	timeout := func() { t.Flow.ResetTimeOut(30 * time.Second) }
 	netRCh := make(chan l3Payload)
 	ticker := time.NewTicker(time.Millisecond * 1)
 	sendTicker := make(chan bool)
 
 	for {
 		select {
-		case <-t.FlowHandler.timeout: // a timeout happend
-			t.FlowHandler.router.log.Printf("tcp flow [%s] timed out; src %s:%d, dst %s:%d", t.FlowHandler.flowHash, t.srcIp, t.srcPort, t.dstIp, t.dstPort)
+		case <-t.Flow.timeout: // a timeout happend
+			t.Flow.router.log.Printf("tcp flow [%s] timed out; src %s:%d, dst %s:%d", t.Flow.hash, t.srcIp, t.srcPort, t.dstIp, t.dstPort)
 			t.Close()
 			return
-		case tunData := <-t.FlowHandler.tunRCh:
+		case tunData := <-t.Flow.tunRCh:
 			timeout()
 
 			// unravel the tunData
@@ -366,13 +366,13 @@ func (t *tcp4FlowHandler) Start() {
 			var ipv4 *layers.IPv4
 			if ipv4, ok = tunData.NetworkLayer().(*layers.IPv4); !ok {
 				// not a tcp packet, drop
-				t.FlowHandler.router.log.Printf("received a non-ipv4 packet %#v", tunData.NetworkLayer())
+				t.Flow.router.log.Printf("received a non-ipv4 packet %#v", tunData.NetworkLayer())
 				break
 			}
 			var tcp *layers.TCP
 			if tcp, ok = tunData.TransportLayer().(*layers.TCP); !ok {
 				// not a tcp packet, drop
-				t.FlowHandler.router.log.Printf("received a non-tcp packet %#v", tunData.TransportLayer())
+				t.Flow.router.log.Printf("received a non-tcp packet %#v", tunData.TransportLayer())
 				break
 			}
 			t.srcIp = ipv4.SrcIP
@@ -383,7 +383,7 @@ func (t *tcp4FlowHandler) Start() {
 			if t.state != stateListen {
 				if t.lastAckSent != tcp.Seq {
 					// we're not in a place to receive this packet. drop it.
-					t.FlowHandler.router.log.Printf("out of order packet received %#v", tcp)
+					t.Flow.router.log.Printf("out of order packet received %#v", tcp)
 					break
 				}
 			}
@@ -405,7 +405,7 @@ func (t *tcp4FlowHandler) Start() {
 			}
 
 			if _, ok := recvFlags[flagRST]; ok {
-				t.FlowHandler.router.log.Print("received RST, closing")
+				t.Flow.router.log.Print("received RST, closing")
 				t.close()
 				break
 			}
@@ -415,7 +415,7 @@ func (t *tcp4FlowHandler) Start() {
 					t.state = stateSynReceived
 					err := t.dialUpstream()
 					if err != nil {
-						t.FlowHandler.router.log.Printf("upstream connection failed: %s", err)
+						t.Flow.router.log.Printf("upstream connection failed: %s", err)
 						t.Close()
 						break
 					}
@@ -445,7 +445,7 @@ func (t *tcp4FlowHandler) Start() {
 					t.close()
 					break
 				}
-				t.FlowHandler.router.log.Printf("received FIN when not in Established or FINWait1 state. State: %#v", t.state)
+				t.Flow.router.log.Printf("received FIN when not in Established or FINWait1 state. State: %#v", t.state)
 			}
 
 			if _, ok := recvFlags[flagACK]; ok {
@@ -458,17 +458,17 @@ func (t *tcp4FlowHandler) Start() {
 					break
 				}
 				if tcp.Ack == t.sequence {
-					t.FlowHandler.router.log.Printf("received ACK for sent packet. State: %#v", t.state)
+					t.Flow.router.log.Printf("received ACK for sent packet. State: %#v", t.state)
 					break
 				}
-				t.FlowHandler.router.log.Printf("received ACK when not in SynReceived or LastAck state. State: %#v", t.state)
+				t.Flow.router.log.Printf("received ACK when not in SynReceived or LastAck state. State: %#v", t.state)
 			}
 
 			//we should never get here
-			t.FlowHandler.router.log.Printf("received bad tcp packet %#v", tcp)
+			t.Flow.router.log.Printf("received bad tcp packet %#v", tcp)
 		case netData := <-netRCh:
 			if netData.err != nil {
-				t.FlowHandler.router.log.Printf("error receive data from net %#v", netData.err)
+				t.Flow.router.log.Printf("error receive data from net %#v", netData.err)
 				t.Close()
 			}
 			t.lock.Lock()
@@ -484,7 +484,7 @@ func (t *tcp4FlowHandler) Start() {
 }
 
 // startTCP4FlowHandler is a FlowHandler for handling transit tcp traffic
-func startTCP4FlowHandler(f *FlowHandler) {
+func startTCP4FlowHandler(f *Flow) {
 	defer f.Close()
 	t := newTCP4FlowHandler(f)
 	t.state = stateListen
