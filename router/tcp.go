@@ -224,7 +224,7 @@ func (t *tcp4FlowHandler) flushRecvBuffer() {
 	_, err := t.conn.Write(t.recvBuffer)
 	t.recvBuffer = []byte{}
 	if err != nil {
-		t.Flow.router.log.Printf("error flushing recvBuffer: %s", err)
+		t.log("error flushing recvBuffer: %s", err)
 		t.Teardown()
 	}
 }
@@ -281,7 +281,7 @@ func (t *tcp4FlowHandler) buildPacket() (layers.IPv4, layers.TCP) {
 func (t *tcp4FlowHandler) send(flags []tcpFlag, payload gopacket.Payload) {
 	// every packet we send should go through here.
 	ipLayer, tcpLayer := t.buildPacket()
-
+	t.log("send: %v", flags)
 	for _, f := range flags {
 		switch f {
 		case flagACK:
@@ -308,7 +308,7 @@ func (t *tcp4FlowHandler) send(flags []tcpFlag, payload gopacket.Payload) {
 	// serialize reply into bytes
 	err := gopacket.SerializeLayers(t.Flow.buf, t.Flow.opts, &ipLayer, &tcpLayer, payload)
 	if err != nil {
-		t.Flow.router.log.Printf("error serializing TCP packet for _send: %s", err)
+		t.log("error serializing TCP packet for _send: %s", err)
 		return
 	}
 
@@ -364,7 +364,7 @@ func (t *tcp4FlowHandler) Close() {
 	if t.conn != nil {
 		defer t.conn.Close()
 	}
-	t.Flow.router.log.Printf("tcp flow [%s] closed; src %s:%d, dst %s:%d", t.Flow.hash, t.srcIp, t.srcPort, t.dstIp, t.dstPort)
+	t.log("tcp flow closed")
 	t.exit <- true
 }
 
@@ -477,6 +477,11 @@ func (t *tcp4FlowHandler) tcpFSM(tcp *layers.TCP) tcpState {
 	return stateClosed
 }
 
+func (t *tcp4FlowHandler) log(format string, params ...interface{}) {
+	info := fmt.Sprintf("[%d][%s] [%s:%d]-[%s:%d] [%s] ", t.id, t.Flow.hash, t.srcIp, t.srcPort, t.dstIp, t.dstPort, t.state)
+	t.Flow.router.log.Printf(info+format, params...)
+}
+
 func (t *tcp4FlowHandler) Start() {
 	// shorthand to reset the timeout
 	timeout := func() { t.Flow.ResetTimeOut(30 * time.Second) }
@@ -484,14 +489,12 @@ func (t *tcp4FlowHandler) Start() {
 	ticker := time.NewTicker(time.Millisecond * 1)
 	sendTicker := make(chan bool)
 
-	t.dstIp = net.ParseIP("62.148.169.249")
-
 	for {
 		select {
 		case <-t.exit: // exit signal
 			return
 		case <-t.Flow.timeout: // a timeout happend
-			t.Flow.router.log.Printf("tcp flow [%s] timed out; src %s:%d, dst %s:%d", t.Flow.hash, t.srcIp, t.srcPort, t.dstIp, t.dstPort)
+			t.log("tcp flow [%s] timed out; src %s:%d, dst %s:%d", t.Flow.hash, t.srcIp, t.srcPort, t.dstIp, t.dstPort)
 			//t.Teardown()
 			return
 		case tunData := <-t.Flow.tunRCh:
@@ -502,13 +505,13 @@ func (t *tcp4FlowHandler) Start() {
 			var ipv4 *layers.IPv4
 			if ipv4, ok = tunData.NetworkLayer().(*layers.IPv4); !ok {
 				// not a tcp packet, drop
-				t.Flow.router.log.Printf("received a non-ipv4 packet %#v", tunData.NetworkLayer())
+				t.log("received a non-ipv4 packet %#v", tunData.NetworkLayer())
 				break
 			}
 			var tcp *layers.TCP
 			if tcp, ok = tunData.TransportLayer().(*layers.TCP); !ok {
 				// not a tcp packet, drop
-				t.Flow.router.log.Printf("received a non-tcp packet %#v", tunData.TransportLayer())
+				t.log("received a non-tcp packet %#v", tunData.TransportLayer())
 				break
 			}
 			t.srcIp = ipv4.SrcIP
@@ -518,10 +521,12 @@ func (t *tcp4FlowHandler) Start() {
 
 			state := t.tcpFSM(tcp)
 
+			t.log("received: %v", flagsFromTcpLayer(tcp))
+
 			if state == stateSynReceived { // open upstream before continueing
 				err := t.dialUpstream()
 				if err != nil {
-					t.Flow.router.log.Printf("upstream connection failed: %s", err)
+					t.log("upstream connection failed: %s", err)
 					t.sendRST()
 					t.Close()
 					return
@@ -543,19 +548,20 @@ func (t *tcp4FlowHandler) Start() {
 				//t.Flow.router.log.Printf("received payload in state: %s, %s", t.state.String(), spew.Sdump(tcp.BaseLayer.Payload))
 
 				t.recvBuffer = append(t.recvBuffer, tcp.BaseLayer.Payload...)
+				t.sendACK([]tcpFlag{}, nil)
 				if tcp.PSH {
 					// received push flag, should forward and flush buffer now
 					t.flushRecvBuffer()
 				}
-				t.sendACK([]tcpFlag{}, nil)
 				break
 			}
 
 			//we should never get here
-			t.Flow.router.log.Printf("received bad tcp packet %#v, state: %s", tcp, t.state.String())
+			t.log("received: %v", flagsFromTcpLayer(tcp))
+			//t.log("received bad tcp packet %#v, state: %s", tcp, t.state.String())
 		case netData := <-netRCh:
 			if netData.err != nil {
-				t.Flow.router.log.Printf("error receive data from net %#v", netData.err)
+				t.log("error receive data from net %#v", netData.err)
 				t.Teardown()
 			}
 			t.lock.Lock()
@@ -573,7 +579,7 @@ func (t *tcp4FlowHandler) Start() {
 
 // startTCP4FlowHandler is a FlowHandler for handling transit tcp traffic
 func startTCP4FlowHandler(f *Flow) {
-	f.router.log.Printf("start flow [%s]", f.hash)
+	f.router.log.Printf("started flow [%s]", f.hash)
 	defer f.Close()
 	t := newTCP4FlowHandler(f)
 	t.state = stateListen
