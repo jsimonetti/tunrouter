@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"log"
 	"os"
 	"time"
@@ -60,16 +61,9 @@ func (t *tun) Start() {
 
 	t.log.Printf("Interface Name: %s\n", ifce.Name())
 
-	// local tun interface read and write channel.
-	rCh := make(chan []byte, 1024)
-	wCh := make(chan []byte, 1024)
-
-	// fire off the read and write routines to get/put data from/to the tun interface
-	go t.readRoutine(rCh, ifce)
-	go t.writeRoutine(wCh, ifce)
-
 	// timeout for now after 30 seconds
 	timeOut := time.After(60 * time.Second)
+	eof := make(chan bool)
 
 	// open the router for L3 packets
 	l3rwc, err := t.router.Open(router.L3Mode)
@@ -78,60 +72,23 @@ func (t *tun) Start() {
 	}
 	defer l3rwc.Close()
 
-	// fire a goroutine to read from the router
 	go func() {
-		buff := make([]byte, 4096)
-		for {
-			n, err := l3rwc.Read(buff)
-			if err != nil {
-				if n > 0 {
-					wCh <- buff[:n]
-				}
-				return
-			}
-			wCh <- buff[:n]
-		}
+		io.Copy(l3rwc, ifce)
+		eof <- true
+	}()
+	go func() {
+		io.Copy(ifce, l3rwc)
+		eof <- true
 	}()
 
 	// loop until timeout
 	for {
 		select {
-		case buff := <-rCh:
-			l3rwc.Write(buff)
+		case <-eof:
+			return
 		case <-timeOut:
 			return
 		}
 
-	}
-}
-
-// readRoutine will read from the tun interface and put the read bytes
-// into rCh
-func (t *tun) readRoutine(rCh chan []byte, ifce *water.Interface) {
-	defer func() {
-		close(rCh)
-	}()
-
-	buff := make([]byte, 4096)
-	for {
-		n, err := ifce.Read(buff)
-		if err != nil {
-			t.log.Printf("error TUN read: %s", err)
-		}
-		rCh <- buff[:n]
-	}
-}
-
-// writeRoutine will write bytes from the wCh onto the tun interface
-func (t *tun) writeRoutine(wCh chan []byte, ifce *water.Interface) {
-	defer func() {
-		ifce.Close()
-	}()
-	for {
-		data := <-wCh
-		_, err := ifce.Write(data)
-		if err != nil {
-			t.log.Printf("error writing: %s", err)
-		}
 	}
 }
