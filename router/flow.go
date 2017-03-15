@@ -86,12 +86,6 @@ type Flow struct {
 	timeout <-chan time.Time // channel where a time.After channel is inserted
 
 	router *router
-
-	// needed for TCP connections
-	//	dialing     bool // set to true while dialing out
-	//	handShaking bool // set to true during hand with client
-	//	tunSeq      uint32
-	//	mySeq       uint32
 }
 
 // ResetTimeOut will reset the timeout for this flow
@@ -103,22 +97,14 @@ func (f *Flow) ResetTimeOut(extend time.Duration) {
 
 // Close will remove the FlowHandler from the FlowTable and close any open connections handled by it
 func (f *Flow) Close() {
+	f.router.log.Printf("closing flow %s", f.hash)
 	f.router.flowTable.Delete(f.hash)
 	close(f.tunRCh)
 	if f.conn != nil {
+		f.router.log.Printf("closing conn to %s", f.conn.RemoteAddr().String())
 		f.conn.Close()
 	}
 }
-
-// Dialing will set the handler to dial mode to drop retries from the client
-//func (f *FlowHandler) Dialing(v bool) {
-//	f.dialing = v
-//}
-
-// Handshake will set the handler to handshaking mode
-//func (f *FlowHandler) Handshake(v bool) {
-//	f.handShaking = v
-//}
 
 // readNetData will read data from conn and put it on channel netRCh
 // on error the error is forwarded to channel netECh
