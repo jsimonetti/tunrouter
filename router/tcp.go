@@ -111,11 +111,6 @@ type tcp4FlowHandler struct {
 	exit chan bool
 
 	FSM *tcp4FSM
-	//	state tcpState
-	//	sequence    uint32 // my sequence number
-	//	lastAckSent uint32 // last client seq nr i acked
-
-	//conn net.Conn // upstream connection
 }
 
 func (t *tcp4FlowHandler) dialUpstream() (err error) {
@@ -185,7 +180,7 @@ func (t *tcp4FlowHandler) Start() {
 				t.FSM.srcIp = ipv4.SrcIP
 				t.FSM.dstIp = ipv4.DstIP
 			}
-
+			prevState := t.FSM.State()
 			state := t.FSM.tcpFSM(tcp)
 
 			if state == stateClosed {
@@ -207,7 +202,7 @@ func (t *tcp4FlowHandler) Start() {
 				break
 			}
 
-			if state != stateEstablished {
+			if state != stateEstablished || prevState != stateEstablished {
 				// packet is part of setup or teardown of connection
 				// don't do anything with it, as this is done in the tcpFSM
 				break
