@@ -221,6 +221,9 @@ func (t *tcp4FlowHandler) Start() {
 			//t.log("received bad tcp packet %#v, state: %s", tcp, t.state.String())
 		case netData := <-netRCh:
 			if netData.err != nil {
+				if len(netData.payload) > 0 {
+					t.FSM.Send(netData.payload)
+				}
 				t.log("error receive data from net %#v", netData.err)
 				t.FSM.Teardown()
 			}
