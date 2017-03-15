@@ -251,7 +251,7 @@ func (t *tcp4FSM) FIN(flags []tcpFlag, data []byte) {
 }
 
 func (t *tcp4FSM) RST() {
-	t.send([]tcpFlag{}, nil)
+	t.send([]tcpFlag{flagRST}, nil)
 }
 
 func (t *tcp4FSM) Teardown() {
